@@ -109,10 +109,8 @@ def node_read_code(state: dict) -> dict:
         files = github_service.get_repo_files_cached(
             ws.repo_url, extensions=settings.index_file_extensions
         )
-        ws.repo_files = files
-        repo_paths = {f["path"] for f in files}
 
-        # Vector search in Qdrant (payload.repo = owner/name)
+        # Vector search in Qdrant (payload.repo = owner/name) — paths only
         query = ws.plan.get("search_query", " ".join(ws.plan.get("changes", [])))
         vector_chunks = qdrant_search_service.search_relevant_chunks(repo_name, query)
 
@@ -127,10 +125,24 @@ def node_read_code(state: dict) -> dict:
             },
         )
 
-        # Assign edit targets from Qdrant hits (planner only provides search_query)
-        ws.plan = assign_target_files(ws.plan, vector_chunks, repo_paths)
-
+        ws.plan = assign_target_files(ws.plan, vector_chunks)
         planned_paths = ws.plan.get("files_to_modify", [])
+
+        # Ensure targets have full GitHub bodies (bulk fetch may miss paths)
+        file_paths = {f["path"] for f in files}
+        missing_targets = [p for p in planned_paths if p not in file_paths]
+        if missing_targets:
+            extra = github_service.get_file_contents(ws.repo_url, missing_targets)
+            files = github_service.merge_repo_files(files, extra)
+            file_paths = {f["path"] for f in files}
+
+        still_missing = [p for p in planned_paths if p not in file_paths]
+        if still_missing:
+            raise RuntimeError(
+                f"Could not fetch full file content from GitHub for: {still_missing}"
+            )
+
+        ws.repo_files = files
 
         ws.relevant_chunks = build_context(planned_paths, vector_chunks, files)
 

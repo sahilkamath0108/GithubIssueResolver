@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.core.settings import settings
 from app.repositories.task_repo import TaskRepository
+from app.services import github_service
 from uuid import UUID
 
 from app.schemas.workflow import WorkflowSubmitResponse
@@ -74,6 +75,11 @@ async def github_issues_webhook(request: Request, db: Session = Depends(get_db))
 
     if not isinstance(issue_url, str) or not isinstance(repo_url, str):
         raise HTTPException(status_code=400, detail="Missing issue.html_url or repository.html_url in payload.")
+
+    try:
+        github_service.assert_issue_matches_repo(issue_url, repo_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     task_repo = TaskRepository(db)
     task = task_repo.create(issue_url=issue_url, repo_url=repo_url)

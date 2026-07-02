@@ -84,7 +84,7 @@ class CodeWriterAgent:
         parts: list[str] = []
         for c in chunks:
             header = f"# File: {c['path']}"
-            if c.get("source") == "vector_chunk":
-                header += " (Qdrant snippet — match repo language/style)"
+            if c.get("source") in ("related_snippet", "vector_chunk"):
+                header += " (related snippet — not the file being edited)"
             parts.append(f"{header}\n{c['chunk']}")
         return "\n\n".join(parts)

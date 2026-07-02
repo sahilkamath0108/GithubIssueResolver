@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.repositories.task_repo import TaskRepository
+from app.services import github_service
 from app.schemas.workflow import WorkflowSubmitRequest, WorkflowSubmitResponse, TaskStatusResponse
 from app.models.task import TaskStatus
 from app.tasks.workflow_tasks import run_workflow_task
@@ -12,6 +13,11 @@ router = APIRouter()
 @router.post("/submit", response_model=WorkflowSubmitResponse)
 def submit_workflow(payload: WorkflowSubmitRequest, db: Session = Depends(get_db)):
     """Submit a GitHub issue for agent processing."""
+    try:
+        github_service.assert_issue_matches_repo(payload.issue_url, payload.repo_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     task_repo = TaskRepository(db)
     task = task_repo.create(issue_url=payload.issue_url, repo_url=payload.repo_url)
 
