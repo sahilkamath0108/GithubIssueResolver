@@ -71,6 +71,7 @@ class Settings(BaseSettings):
 
     # API security
     API_KEY: str = ""  # set in .env
+    FRONTEND_ORIGIN: str = ""  # e.g. http://localhost:3000 for CORS
 
     class Config:
         env_file = ".env"

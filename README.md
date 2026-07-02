@@ -77,6 +77,7 @@ LLM calls happen in three places: **plan**, **write**, **fix** (on test failure)
 | Service   | Port   | Role                                      |
 |-----------|--------|-------------------------------------------|
 | `backend` | 8000   | FastAPI HTTP API                          |
+| `frontend`| 3000   | React web UI (nginx → proxies `/api`)     |
 | `worker`  | —      | Celery + LangGraph workflow               |
 | `postgres`| 5432   | Tasks, logs, repo index state, DLQ        |
 | `redis`   | 6379   | Celery broker + LLM response cache        |
@@ -174,6 +175,8 @@ curl http://localhost:8000/health
 ```
 
 Open interactive API docs: [http://localhost:8000/docs](http://localhost:8000/docs)
+
+**Web UI:** [http://localhost:3000](http://localhost:3000) — use the dashboard to index repos, submit issues, and track tasks (no Swagger required).
 
 ### 5. Index a repository (required before workflow search works well)
 
@@ -401,7 +404,7 @@ githubIssueClone/
 │   ├── Dockerfile
 │   ├── Dockerfile.worker       # Mounts Docker socket for test runner
 │   └── requirements.txt
-└── frontend/                   # Optional Vite/React UI (placeholder)
+└── frontend/                   # React + Vite web UI (port 3000 in Docker)
 ```
 
 ---
@@ -470,7 +473,11 @@ Run worker separately (Linux/macOS):
 celery -A app.core.celery_app worker -Q main_queue,retry_queue,dlq_queue --loglevel=info
 ```
 
-### Frontend (optional)
+### Frontend (web UI)
+
+**Docker (recommended):** included in `docker compose up --build` — open [http://localhost:3000](http://localhost:3000).
+
+**Local dev** (requires Node.js 20.19+ or 22.12+):
 
 ```bash
 cd frontend
@@ -478,7 +485,20 @@ npm install
 npm run dev
 ```
 
-The frontend is currently a placeholder; use `/docs` or curl for API testing.
+Open [http://localhost:5173](http://localhost:5173). Vite proxies `/api` and `/health` to `localhost:8000`.
+
+**Pages:**
+
+| Route | Purpose |
+|-------|---------|
+| `/` | Dashboard — stats, recent tasks, quick actions |
+| `/submit` | Submit a GitHub issue workflow |
+| `/tasks` | List and filter all tasks |
+| `/tasks/:uuid` | Live status, logs, PR link, retry |
+| `/index` | Sync repository into Qdrant |
+| `/settings` | API key and optional base URL (stored in browser) |
+
+If `API_KEY` is set on the backend, enter it in **Settings** so requests include the `X-API-Key` header.
 
 ### Useful log fields
 
