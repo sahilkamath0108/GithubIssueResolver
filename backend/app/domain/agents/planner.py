@@ -9,11 +9,31 @@ You do NOT have access to the repository file tree. Do NOT guess file paths or e
 Issue Title: {title}
 Issue Body: {body}
 
+The search_query will be embedded and matched against **source code chunks** in a vector database (function bodies, JSX, imports, class names — not README prose).
+
+search_query rules (critical for vector similarity):
+- Write a **dense keyword string** (roughly 8–25 tokens), not a full sentence or task description.
+- Prefer **words that literally appear in source code**: identifiers, hooks, props, handlers, routes, API paths, error strings, UI labels from the issue.
+- Mix **domain terms from the issue** with **code vocabulary** (e.g. counter increment button click onClick useState setState handler render).
+- Include likely **symbol-style tokens** when inferable (PascalCase/camelCase names, e.g. Counter, handleClick, TodoList).
+- Do NOT use vague meta phrases like "components that render lists", "logic related to", "files that handle", or "implement the feature".
+- Do NOT use file paths or extensions in search_query.
+
+Good search_query examples:
+- "counter increment button onClick useState setCount click handler render display"
+- "todo list map filter item delete checkbox onChange useEffect"
+- "login form submit validate email password onSubmit fetch POST auth token"
+
+Bad search_query examples:
+- "components that render lists"
+- "code responsible for user authentication flow"
+- "find where the bug might be"
+
 Respond ONLY with valid JSON in this exact format:
 {{
   "changes": ["description of change 1", "description of change 2"],
   "test_cases": ["test case description 1", "test case description 2"],
-  "search_query": "short query to find relevant code via semantic search (components, handlers, routes, etc.)"
+  "search_query": "dense code-like keywords for embedding search"
 }}
 """
 
