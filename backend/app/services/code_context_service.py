@@ -18,12 +18,30 @@ def _estimate_tokens(text: str) -> int:
     return len(text) // _CHARS_PER_TOKEN
 
 
-def cap_context(chunks: List[dict], max_tokens: int = None) -> List[dict]:
+def cap_context(
+    chunks: List[dict],
+    max_tokens: int | None = None,
+    *,
+    priority_paths: Set[str] | None = None,
+) -> List[dict]:
+    """
+    Trim context to token budget.
+    Paths in priority_paths (files_to_modify) are always kept in full — never truncated.
+    """
     limit = max_tokens or settings.MAX_CONTEXT_TOKENS
-    result = []
+    priority_paths = priority_paths or set()
+
+    priority = [c for c in chunks if c.get("path") in priority_paths]
+    rest = [c for c in chunks if c.get("path") not in priority_paths]
+
+    result: list[dict] = []
     used = 0
 
-    for item in chunks:
+    for item in priority:
+        result.append(item)
+        used += _estimate_tokens(item.get("chunk", "") + item.get("content", ""))
+
+    for item in rest:
         tokens = _estimate_tokens(item.get("chunk", "") + item.get("content", ""))
         if used + tokens > limit:
             break
@@ -36,21 +54,18 @@ def cap_context(chunks: List[dict], max_tokens: int = None) -> List[dict]:
 def assign_target_files(
     plan: dict,
     vector_chunks: List[dict],
-    repo_paths: Set[str],
     *,
     max_files: int = 5,
 ) -> dict:
     """
-    Pick files_to_modify from Qdrant semantic search hits (must exist in the repo).
-    The planner only supplies search_query — it never guesses paths.
+    Pick files_to_modify from Qdrant semantic search hits.
+    Paths are chosen by vector rank only; full content is loaded from GitHub later.
     """
     targets: list[str] = []
     seen: set[str] = set()
     for vc in vector_chunks:
         path = vc.get("path")
         if not isinstance(path, str) or not path or path in seen:
-            continue
-        if path not in repo_paths:
             continue
         seen.add(path)
         targets.append(path)
@@ -162,13 +177,13 @@ def build_context(
     all_files: List[dict],
 ) -> List[dict]:
     """
-    Build context for the code writer:
+    Build context for the code writer.
 
-    1. Planned repo files (+ Python import deps when applicable)
-    2. Qdrant vector hits — full GitHub file when available, else indexed chunk text
-    3. Python import deps discovered from vector-hit paths
+    - files_to_modify: always full GitHub file bodies (never Qdrant snippets alone)
+    - Other vector hits: supplementary full files or snippets, subject to token cap
     """
     file_map: Dict[str, str] = {f["path"]: f["content"] for f in all_files}
+    target_set = set(planned_paths)
     seen: Set[str] = set()
     result: List[dict] = []
 
@@ -178,29 +193,27 @@ def build_context(
         seen.add(path)
         result.append({"path": path, "chunk": text, "source": source})
 
-    # 1. Explicit planner paths (+ transitive Python deps)
-    for f in resolve_dependencies(planned_paths, all_files):
-        append(f["path"], f["content"], "planned")
+    # 1. Target files — full GitHub content only
+    for path in planned_paths:
+        if path not in file_map:
+            continue
+        append(path, file_map[path], "target_full")
 
-    # 2. Qdrant hits — always inject chunk text; prefer full file from GitHub when we have it
+    # 2. Python import deps for targets (supplementary)
+    for f in resolve_dependencies(planned_paths, all_files):
+        if f["path"] not in target_set:
+            append(f["path"], f["content"], "target_dep")
+
+    # 3. Other Qdrant hits (not edit targets) — context only
     for vc in vector_chunks:
         path = vc.get("path")
-        if not isinstance(path, str) or not path:
+        if not isinstance(path, str) or not path or path in target_set or path in seen:
             continue
         if path in file_map:
-            append(path, file_map[path], "vector_full")
+            append(path, file_map[path], "related_full")
         else:
             chunk_text = vc.get("chunk") or vc.get("text")
             if isinstance(chunk_text, str):
-                append(path, chunk_text, "vector_chunk")
+                append(path, chunk_text, "related_snippet")
 
-    # 3. Python deps for vector paths present in the repo (may add files not in top-k)
-    vector_paths = [
-        c["path"]
-        for c in vector_chunks
-        if isinstance(c.get("path"), str) and c["path"] in file_map
-    ]
-    for f in resolve_dependencies(vector_paths, all_files):
-        append(f["path"], f["content"], "vector_dep")
-
-    return cap_context(result)
+    return cap_context(result, priority_paths=target_set)
