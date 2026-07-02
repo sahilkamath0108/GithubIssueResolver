@@ -10,7 +10,8 @@ class DLQTask(Base):
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     uuid = Column(UUID(as_uuid=True), unique=True, nullable=True, default=uuid.uuid4)
-    original_task_id = Column(UUID(as_uuid=True), nullable=True)  
+    # Store the originating Task.id (integer) as text to avoid UUID casting errors.
+    original_task_id = Column(Text, nullable=True)
     payload = Column(JSONB, nullable=False)
     failed_step = Column(VARCHAR(255), nullable=True)
     error = Column(Text, nullable=True)

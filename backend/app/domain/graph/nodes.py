@@ -4,12 +4,15 @@ from app.domain.agents.code_writer import CodeWriterAgent
 from app.domain.agents.fix_agent import FixAgent
 from app.services import github_service
 from app.services import qdrant_search_service
-from app.services.code_context_service import build_context
+from app.services.code_context_service import build_context, reconcile_plan_files
 from app.indexing.indexer import RepoIndexer
+from app.core.settings import settings
 from app.db.session import SessionLocal
 from app.repositories.task_repo import TaskRepository
 from app.repositories.log_repo import LogRepository
 from app.models.task import TaskStatus
+import traceback
+from app.services.llm_service import get_last_llm_raw
 
 _planner = PlannerAgent()
 _code_writer = CodeWriterAgent()
@@ -21,6 +24,25 @@ def _get_repos():
     db = SessionLocal()
     return db, TaskRepository(db), LogRepository(db)
 
+def _log_node_failure(log_repo: LogRepository, task_repo: TaskRepository, task_id: int, node: str, exc: Exception):
+    tb = traceback.format_exc()
+    # Keep log payload bounded so it fits comfortably in DB + UI.
+    tb_tail = tb[-4000:] if tb else None
+    last_llm = get_last_llm_raw()
+    last_llm_tail = (last_llm[-2000:] if isinstance(last_llm, str) and last_llm else None)
+    log_repo.error(
+        task_id,
+        f"Node failed: {node}",
+        {
+            "node": node,
+            "exc_type": type(exc).__name__,
+            "error": str(exc),
+            "traceback_tail": tb_tail,
+            "last_llm_raw_tail": last_llm_tail,
+        },
+    )
+    task_repo.update_status(task_id, TaskStatus.running, current_step=f"{node}_failed")
+
 
 def node_plan(state: dict) -> dict:
     """LLM node — plan what to change."""
@@ -28,14 +50,27 @@ def node_plan(state: dict) -> dict:
     db, task_repo, log_repo = _get_repos()
     try:
         task_repo.update_status(ws.task_id, TaskStatus.running, current_step="planning")
-        log_repo.info(ws.task_id, "Planner agent started")
+        log_repo.info(ws.task_id, "Node started: plan")
         db.commit()
 
         issue = github_service.get_issue(ws.issue_url)
         ws = _planner.run(ws, issue)
 
-        log_repo.info(ws.task_id, "Plan created", {"plan": ws.plan})
+        last_llm = get_last_llm_raw()
+        log_repo.info(
+            ws.task_id,
+            "Node succeeded: plan",
+            {
+                "plan": ws.plan,
+                "llm_raw_tail": (last_llm[-2000:] if isinstance(last_llm, str) and last_llm else None),
+            },
+        )
         db.commit()
+    except Exception as exc:
+        db.rollback()
+        _log_node_failure(log_repo, task_repo, ws.task_id, "plan", exc)
+        db.commit()
+        raise
     finally:
         db.close()
     return ws.model_dump()
@@ -47,7 +82,7 @@ def node_read_code(state: dict) -> dict:
     db, task_repo, log_repo = _get_repos()
     try:
         task_repo.update_status(ws.task_id, TaskStatus.running, current_step="reading_code")
-        log_repo.info(ws.task_id, "Fetching and indexing repo files")
+        log_repo.info(ws.task_id, "Node started: read_code")
         db.commit()
 
         # Ensure Qdrant repo index is up-to-date (full / incremental / skip)
@@ -70,26 +105,58 @@ def node_read_code(state: dict) -> dict:
         finally:
             indexer.close()
 
-        # Fetch all repo files — cached by repo URL + commit SHA
-        files = github_service.get_repo_files_cached(ws.repo_url)
+        # Fetch repo source files (JS/TS/Python/etc. — same extensions as indexing)
+        files = github_service.get_repo_files_cached(
+            ws.repo_url, extensions=settings.index_file_extensions
+        )
         ws.repo_files = files
+        repo_paths = {f["path"] for f in files}
 
-        # Vector search — find semantically relevant chunks
+        # Vector search in Qdrant (payload.repo = owner/name)
         query = ws.plan.get("search_query", " ".join(ws.plan.get("changes", [])))
         vector_chunks = qdrant_search_service.search_relevant_chunks(repo_name, query)
 
-        # Planned files from planner output
+        log_repo.info(
+            ws.task_id,
+            "Qdrant vector search",
+            {
+                "repo": repo_name,
+                "query": query,
+                "hits": len(vector_chunks),
+                "paths": [c.get("path") for c in vector_chunks],
+            },
+        )
+
+        # Fix planner paths that don't exist (e.g. invented counter_component.py)
+        ws.plan = reconcile_plan_files(ws.plan, vector_chunks, repo_paths)
+
         planned_paths = ws.plan.get("files_to_modify", [])
 
-        # Build full context: planned files + their deps + vector results
         ws.relevant_chunks = build_context(planned_paths, vector_chunks, files)
+
+        if not ws.relevant_chunks:
+            raise RuntimeError(
+                f"No code context for {repo_name}. "
+                "Ensure the repo is indexed in Qdrant and Ollama embeddings are reachable, "
+                f"or that GitHub returned files (got {len(files)} files)."
+            )
 
         log_repo.info(
             ws.task_id,
-            f"Context built: {len(ws.relevant_chunks)} files (planned + deps + vector)",
-            {"files": [c["path"] for c in ws.relevant_chunks]},
+            f"Context built: {len(ws.relevant_chunks)} files (planned + Qdrant + deps)",
+            {
+                "files": [c["path"] for c in ws.relevant_chunks],
+                "sources": [c.get("source") for c in ws.relevant_chunks],
+                "files_to_modify": planned_paths,
+            },
         )
+        log_repo.info(ws.task_id, "Node succeeded: read_code", {"context_files": len(ws.relevant_chunks)})
         db.commit()
+    except Exception as exc:
+        db.rollback()
+        _log_node_failure(log_repo, task_repo, ws.task_id, "read_code", exc)
+        db.commit()
+        raise
     finally:
         db.close()
     return ws.model_dump()
@@ -101,13 +168,31 @@ def node_write_code(state: dict) -> dict:
     db, task_repo, log_repo = _get_repos()
     try:
         task_repo.update_status(ws.task_id, TaskStatus.running, current_step="writing_code")
-        log_repo.info(ws.task_id, "Code writer agent started")
+        log_repo.info(ws.task_id, "Node started: write_code")
         db.commit()
 
         ws = _code_writer.run(ws)
 
-        log_repo.info(ws.task_id, "Code generated", {"files": list((ws.generated_code or {}).keys())})
+        last_llm = get_last_llm_raw()
+        previews: dict[str, str] = {}
+        for p, c in (ws.generated_code or {}).items():
+            if isinstance(c, str):
+                previews[p] = c[:400]
+        log_repo.info(
+            ws.task_id,
+            "Node succeeded: write_code",
+            {
+                "files": list((ws.generated_code or {}).keys()),
+                "llm_raw_tail": (last_llm[-2000:] if isinstance(last_llm, str) and last_llm else None),
+                "decoded_preview": previews,
+            },
+        )
         db.commit()
+    except Exception as exc:
+        db.rollback()
+        _log_node_failure(log_repo, task_repo, ws.task_id, "write_code", exc)
+        db.commit()
+        raise
     finally:
         db.close()
     return ws.model_dump()
@@ -120,16 +205,25 @@ def node_execute(state: dict) -> dict:
     db, task_repo, log_repo = _get_repos()
     try:
         task_repo.update_status(ws.task_id, TaskStatus.running, current_step="executing_tests")
-        log_repo.info(ws.task_id, "Running tests in Docker")
+        log_repo.info(ws.task_id, "Node started: execute", {"skip_tests": settings.WORKFLOW_SKIP_TESTS})
         db.commit()
 
-        output, passed = run_tests(ws.generated_code)
+        if settings.WORKFLOW_SKIP_TESTS:
+            output, passed = "SKIPPED (WORKFLOW_SKIP_TESTS=true)", True
+        else:
+            output, passed = run_tests(ws.generated_code)
         ws.test_output = output
         ws.test_passed = passed
 
         level = "INFO" if passed else "ERROR"
         log_repo.create(ws.task_id, level, f"Tests {'passed' if passed else 'failed'}", {"output": output[:500]})
+        log_repo.info(ws.task_id, "Node succeeded: execute", {"passed": passed})
         db.commit()
+    except Exception as exc:
+        db.rollback()
+        _log_node_failure(log_repo, task_repo, ws.task_id, "execute", exc)
+        db.commit()
+        raise
     finally:
         db.close()
     return ws.model_dump()
@@ -141,13 +235,23 @@ def node_fix(state: dict) -> dict:
     db, task_repo, log_repo = _get_repos()
     try:
         task_repo.update_status(ws.task_id, TaskStatus.running, current_step=f"fixing_retry_{ws.retry_count + 1}")
-        log_repo.info(ws.task_id, f"Fix agent started (retry {ws.retry_count + 1})", {"error_type": ws.error_type})
+        log_repo.info(ws.task_id, "Node started: fix", {"retry": ws.retry_count + 1, "error_type": ws.error_type})
         db.commit()
 
         ws = _fix_agent.run(ws)
 
-        log_repo.info(ws.task_id, "Fix applied")
+        last_llm = get_last_llm_raw()
+        log_repo.info(
+            ws.task_id,
+            "Node succeeded: fix",
+            {"llm_raw_tail": (last_llm[-2000:] if isinstance(last_llm, str) and last_llm else None)},
+        )
         db.commit()
+    except Exception as exc:
+        db.rollback()
+        _log_node_failure(log_repo, task_repo, ws.task_id, "fix", exc)
+        db.commit()
+        raise
     finally:
         db.close()
     return ws.model_dump()
@@ -159,7 +263,7 @@ def node_create_pr(state: dict) -> dict:
     db, task_repo, log_repo = _get_repos()
     try:
         task_repo.update_status(ws.task_id, TaskStatus.running, current_step="creating_pr")
-        log_repo.info(ws.task_id, "Creating PR on GitHub")
+        log_repo.info(ws.task_id, "Node started: create_pr")
         db.commit()
 
         branch = f"agent/fix-task-{ws.task_id}-r{ws.retry_count}-{int(__import__('time').time())}"
@@ -175,8 +279,13 @@ def node_create_pr(state: dict) -> dict:
         )
         ws.pr_url = pr_url
 
-        log_repo.info(ws.task_id, "PR created", {"pr_url": pr_url})
+        log_repo.info(ws.task_id, "Node succeeded: create_pr", {"pr_url": pr_url})
         db.commit()
+    except Exception as exc:
+        db.rollback()
+        _log_node_failure(log_repo, task_repo, ws.task_id, "create_pr", exc)
+        db.commit()
+        raise
     finally:
         db.close()
     return ws.model_dump()

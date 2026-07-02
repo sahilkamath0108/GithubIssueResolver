@@ -42,11 +42,12 @@ def get_issue(issue_url: str) -> dict:
     }
 
 
-def get_repo_files(repo_url: str, extensions: tuple = (".py",)) -> list[dict]:
+def get_repo_files(repo_url: str, extensions: tuple | None = None) -> list[dict]:
     """
     Fetch all source files from repo — deterministic, no LLM.
     Returns list of {path, content}.
     """
+    extensions = extensions or settings.index_file_extensions
     repo = _parse_repo(repo_url)
     files = []
     contents = repo.get_contents("")
@@ -79,7 +80,7 @@ def get_default_branch(repo_url: str) -> str:
     return repo.default_branch
 
 
-def get_repo_files_cached(repo_url: str, extensions: tuple = (".py",)) -> list[dict]:
+def get_repo_files_cached(repo_url: str, extensions: tuple | None = None) -> list[dict]:
     """
     Fetch repo files with Redis caching keyed by repo URL + latest commit SHA.
 
@@ -91,7 +92,9 @@ def get_repo_files_cached(repo_url: str, extensions: tuple = (".py",)) -> list[d
     """
     default_branch = get_default_branch(repo_url)
     sha = get_latest_commit_sha(repo_url, branch=default_branch)
-    cache_key = f"repo:files:{hashlib.sha256(f'{repo_url}:{sha}'.encode()).hexdigest()}"
+    extensions = extensions or settings.index_file_extensions
+    ext_key = ",".join(sorted(extensions))
+    cache_key = f"repo:files:{hashlib.sha256(f'{repo_url}:{sha}:{ext_key}'.encode()).hexdigest()}"
 
     cached = _cache.get(cache_key)
     if cached:

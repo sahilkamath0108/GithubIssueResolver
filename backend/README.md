@@ -61,8 +61,12 @@ QDRANT_COLLECTION=repo_code_chunks
 # If using Qdrant Cloud, set the API key (recommended)
 QDRANT_API_KEY=your_qdrant_api_key
 OLLAMA_BASE_URL=http://host.docker.internal:11434
-OLLAMA_CHAT_MODEL=gemma4:e4b
 OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+
+# Groq (chat LLM for workflow plan/write/fix)
+GROQ_API_KEY=your_groq_api_key
+GROQ_BASE_URL=https://api.groq.com
+GROQ_MODEL=llama-3.3-70b-versatile
 # Optional: set when you must match an existing collection dimension
 # QDRANT_EMBEDDING_DIM=768
 ```

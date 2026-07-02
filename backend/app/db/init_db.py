@@ -1,51 +1,29 @@
 from sqlalchemy import text
 from app.db.session import engine, Base
-import app.models  
+from app.db.task_log_partitions import ensure_task_log_partitions
+import app.models
 
 
-def create_partitions(conn):
+def ensure_schema_compat(conn):
     """
-    Create monthly partitions for task_logs.
-    SQLAlchemy ORM cannot declare PARTITION BY — must be done via raw SQL.
-    Add more partitions as needed or automate via a scheduled job.
+    Small forward-only schema fixes for local/dev environments.
+    `create_all` won't alter existing columns, so we do lightweight ALTERs here.
     """
+    # dlq_tasks.original_task_id used to be UUID; now stored as TEXT.
+    # Safe for existing UUID values and for integer ids stored as strings.
     conn.execute(text("""
         DO $$
         BEGIN
-            IF NOT EXISTS (
-                SELECT 1 FROM pg_class c
-                JOIN pg_namespace n ON n.oid = c.relnamespace
-                WHERE c.relname = 'task_logs_2026_01'
+            IF EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_name = 'dlq_tasks'
+                  AND column_name = 'original_task_id'
+                  AND data_type = 'uuid'
             ) THEN
-                CREATE TABLE task_logs_2026_01 PARTITION OF task_logs
-                FOR VALUES FROM ('2026-01-01') TO ('2026-02-01');
-            END IF;
-
-            IF NOT EXISTS (
-                SELECT 1 FROM pg_class c
-                JOIN pg_namespace n ON n.oid = c.relnamespace
-                WHERE c.relname = 'task_logs_2026_02'
-            ) THEN
-                CREATE TABLE task_logs_2026_02 PARTITION OF task_logs
-                FOR VALUES FROM ('2026-02-01') TO ('2026-03-01');
-            END IF;
-
-            IF NOT EXISTS (
-                SELECT 1 FROM pg_class c
-                JOIN pg_namespace n ON n.oid = c.relnamespace
-                WHERE c.relname = 'task_logs_2026_03'
-            ) THEN
-                CREATE TABLE task_logs_2026_03 PARTITION OF task_logs
-                FOR VALUES FROM ('2026-03-01') TO ('2026-04-01');
-            END IF;
-
-            IF NOT EXISTS (
-                SELECT 1 FROM pg_class c
-                JOIN pg_namespace n ON n.oid = c.relnamespace
-                WHERE c.relname = 'task_logs_2026_04'
-            ) THEN
-                CREATE TABLE task_logs_2026_04 PARTITION OF task_logs
-                FOR VALUES FROM ('2026-04-01') TO ('2026-05-01');
+                ALTER TABLE dlq_tasks
+                ALTER COLUMN original_task_id TYPE TEXT
+                USING original_task_id::text;
             END IF;
         END
         $$;
@@ -55,7 +33,8 @@ def create_partitions(conn):
 def init():
     Base.metadata.create_all(bind=engine)
     with engine.connect() as conn:
-        create_partitions(conn)
+        ensure_task_log_partitions(conn)
+        ensure_schema_compat(conn)
         conn.commit()
 
 

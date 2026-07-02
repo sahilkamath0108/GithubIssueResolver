@@ -10,7 +10,6 @@ from app.domain.state.workflow_state import WorkflowStateSchema
 def build_graph() -> StateGraph:
     graph = StateGraph(dict)
 
-    # Register nodes
     graph.add_node("plan", node_plan)
     graph.add_node("read_code", node_read_code)
     graph.add_node("write_code", node_write_code)
@@ -19,13 +18,11 @@ def build_graph() -> StateGraph:
     graph.add_node("create_pr", node_create_pr)
     graph.add_node("dlq", node_send_to_dlq)
 
-    # Linear flow
     graph.set_entry_point("plan")
     graph.add_edge("plan", "read_code")
     graph.add_edge("read_code", "write_code")
     graph.add_edge("write_code", "execute")
 
-    # Conditional routing after execution
     graph.add_conditional_edges(
         "execute",
         route_after_execute,
@@ -36,10 +33,7 @@ def build_graph() -> StateGraph:
         },
     )
 
-    # Fix loops back to execute
     graph.add_edge("fix", "execute")
-
-    # Terminal nodes
     graph.add_edge("create_pr", END)
     graph.add_edge("dlq", END)
 
@@ -47,10 +41,7 @@ def build_graph() -> StateGraph:
 
 
 def run_workflow(task_id: int, issue_url: str, repo_url: str, max_retries: int = 2) -> dict:
-    """
-    Entry point for running the full agent workflow.
-    Returns final state dict.
-    """
+    """Entry point for running the full agent workflow. Returns final state dict."""
     graph = build_graph()
     initial_state = WorkflowStateSchema(
         task_id=task_id,

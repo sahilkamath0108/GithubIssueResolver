@@ -6,8 +6,11 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     REDIS_URL: str
 
-    # Ollama (LLM for workflow + embeddings for indexing/search)
-    OLLAMA_CHAT_MODEL: str = "gemma2:9b"
+    # Groq (chat LLM for workflow plan/write/fix) via OpenAI-compatible API
+    GROQ_API_KEY: str = ""
+    GROQ_BASE_URL: str = "https://api.groq.com"
+    # Use a Groq chat-completions model ID (see Groq console model list)
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
 
     # GitHub
     GITHUB_TOKEN: str
@@ -58,10 +61,13 @@ class Settings(BaseSettings):
 )
     INDEX_UPSERT_BATCH_SIZE: int = 64
 
+    CONTEXT_SEARCH_TOP_K: int = 12
+
     # Agent limits
     MAX_RETRIES: int = 2
     MAX_AGENT_STEPS: int = 5
     MAX_CONTEXT_TOKENS: int = 6000
+    WORKFLOW_SKIP_TESTS: bool = False
 
     # API security
     API_KEY: str = ""  # set in .env

@@ -29,5 +29,10 @@ class PlannerAgent:
             body=issue["body"],
         )
         plan = call_llm_json(prompt, use_cache=True)
+        if not isinstance(plan, dict):
+            repair = prompt + "\n\nYour previous response was invalid. Return ONLY valid JSON in the exact schema. Do not include explanations."
+            plan = call_llm_json(repair, use_cache=False)
+        if not isinstance(plan, dict) or not isinstance(plan.get("files_to_modify"), list) or not isinstance(plan.get("changes"), list):
+            raise ValueError("LLM returned invalid plan JSON.")
         state.plan = plan
         return state

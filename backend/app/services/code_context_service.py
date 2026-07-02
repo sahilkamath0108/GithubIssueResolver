@@ -1,12 +1,8 @@
 """
 Code Context Service — deterministic, no LLM.
 
-Responsibilities:
-1. Parse import dependencies from Python files using AST
-2. Resolve relative AND absolute imports using file path context
-3. Resolve transitive dependencies up to max_depth levels
-4. Combine planned files + their deps + vector search results
-   into a deduplicated, token-capped context for the code writer agent.
+Combines GitHub file contents with Qdrant vector hits (filtered by repo payload)
+into a token-capped context for the code writer.
 """
 import ast
 import posixpath
@@ -15,28 +11,14 @@ from typing import List, Dict, Set
 from app.core.settings import settings
 
 
-# ~4 characters per token is a reliable approximation for code
 _CHARS_PER_TOKEN = 4
 
 
 def _estimate_tokens(text: str) -> int:
-    """Estimate token count from character count"""
     return len(text) // _CHARS_PER_TOKEN
 
 
 def cap_context(chunks: List[dict], max_tokens: int = None) -> List[dict]:
-    """
-    Trim context chunks to fit within the token budget.
-    Planned files (earlier in list) are always prioritized — they are added first
-    and later chunks are dropped if the budget is exceeded.
-
-    Args:
-        chunks: list of {path, chunk} dicts, priority order (planned files first)
-        max_tokens: token cap, defaults to settings.MAX_CONTEXT_TOKENS
-
-    Returns:
-        Trimmed list that fits within the token budget.
-    """
     limit = max_tokens or settings.MAX_CONTEXT_TOKENS
     result = []
     used = 0
@@ -51,14 +33,39 @@ def cap_context(chunks: List[dict], max_tokens: int = None) -> List[dict]:
     return result
 
 
-def _resolve_relative_import(current_file: str, level: int, module: str | None) -> List[str]:
+def reconcile_plan_files(
+    plan: dict,
+    vector_chunks: List[dict],
+    repo_paths: Set[str],
+    *,
+    max_files: int = 5,
+) -> dict:
     """
-    Resolve a relative import to candidate file paths.
+    Ensure files_to_modify point at real repo paths.
+    If the planner invented paths, replace them with top Qdrant vector hits.
     """
-    # Start from the directory of the current file
-    base = posixpath.dirname(current_file)
+    planned = list(plan.get("files_to_modify") or [])
+    valid = [p for p in planned if p in repo_paths]
+    if valid:
+        plan["files_to_modify"] = valid[:max_files]
+        return plan
 
-    # Each extra level goes one directory up
+    from_vector: list[str] = []
+    seen: set[str] = set()
+    for vc in vector_chunks:
+        path = vc.get("path")
+        if isinstance(path, str) and path and path not in seen:
+            seen.add(path)
+            from_vector.append(path)
+
+    if from_vector:
+        plan["files_to_modify"] = from_vector[:max_files]
+        plan["_plan_reconciled_from_vector"] = True
+    return plan
+
+
+def _resolve_relative_import(current_file: str, level: int, module: str | None) -> List[str]:
+    base = posixpath.dirname(current_file)
     for _ in range(level - 1):
         base = posixpath.dirname(base)
 
@@ -69,9 +76,7 @@ def _resolve_relative_import(current_file: str, level: int, module: str | None) 
             f"{resolved_base}.py",
             f"{resolved_base}/__init__.py",
         ]
-    else:
-        # `from . import something` — the package __init__ is the anchor
-        return [posixpath.join(base, "__init__.py")]
+    return [posixpath.join(base, "__init__.py")]
 
 
 def _parse_local_imports(
@@ -79,10 +84,6 @@ def _parse_local_imports(
     current_file: str,
     all_paths: Set[str],
 ) -> List[str]:
-    """
-    Parse all imports (absolute + relative) from a Python file.
-    Returns only paths that actually exist in the repo.
-    """
     try:
         tree = ast.parse(file_content)
     except SyntaxError:
@@ -92,36 +93,29 @@ def _parse_local_imports(
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            # e.g. import os.path  →  absolute only, check if local
             for alias in node.names:
                 module_path = alias.name.replace(".", "/")
                 candidates += [
                     f"{module_path}.py",
                     f"{module_path}/__init__.py",
                 ]
-
         elif isinstance(node, ast.ImportFrom):
             if node.level and node.level > 0:
-                # Relative import — resolve using current file path
                 candidates += _resolve_relative_import(
                     current_file, node.level, node.module
                 )
             elif node.module:
-                # Absolute import
                 module_path = node.module.replace(".", "/")
                 candidates += [
                     f"{module_path}.py",
                     f"{module_path}/__init__.py",
                 ]
 
-    # Filter to only paths that exist in the repo
     resolved = []
     for candidate in candidates:
-        # Exact match
         if candidate in all_paths:
             resolved.append(candidate)
         else:
-            # Suffix match — handles cases where repo root differs
             matches = [p for p in all_paths if p.endswith(f"/{candidate}") or p == candidate]
             resolved.extend(matches)
 
@@ -133,12 +127,6 @@ def resolve_dependencies(
     all_files: List[dict],
     max_depth: int = 3,
 ) -> List[dict]:
-    """
-    Given seed file paths, recursively resolve all local import
-    dependencies (absolute + relative) up to max_depth levels.
-
-    Returns list of {path, content} dicts including seeds + all deps.
-    """
     file_map: Dict[str, str] = {f["path"]: f["content"] for f in all_files}
     all_paths: Set[str] = set(file_map.keys())
 
@@ -152,7 +140,6 @@ def resolve_dependencies(
             if path in visited or path not in file_map:
                 continue
             visited.add(path)
-            # Pass current file path so relative imports can be resolved
             deps = _parse_local_imports(file_map[path], path, all_paths)
             for dep in deps:
                 if dep not in visited:
@@ -173,36 +160,45 @@ def build_context(
     all_files: List[dict],
 ) -> List[dict]:
     """
-    Build complete, deduplicated context for the code writer:
+    Build context for the code writer:
 
-    1. Start with files the planner explicitly identified
-    2. Resolve all their import dependencies (absolute + relative, AST)
-    3. Add files referenced in vector search results + their deps
-    4. Deduplicate — planned files take priority
-
-    Returns list of {path, chunk} dicts ready for the LLM prompt.
+    1. Planned repo files (+ Python import deps when applicable)
+    2. Qdrant vector hits — full GitHub file when available, else indexed chunk text
+    3. Python import deps discovered from vector-hit paths
     """
     file_map: Dict[str, str] = {f["path"]: f["content"] for f in all_files}
-
-    # Step 1+2: planned files + transitive deps
-    dep_files = resolve_dependencies(planned_paths, all_files)
-    dep_paths = {f["path"] for f in dep_files}
-
-    # Step 3: vector search paths not already covered + their deps
-    vector_paths = [
-        c["path"] for c in vector_chunks
-        if c["path"] not in dep_paths and c["path"] in file_map
-    ]
-    extra_files = resolve_dependencies(vector_paths, all_files)
-
-    # Step 4: merge, deduplicate, planned files first
     seen: Set[str] = set()
     result: List[dict] = []
 
-    for f in dep_files + extra_files:
-        if f["path"] not in seen:
-            seen.add(f["path"])
-            result.append({"path": f["path"], "chunk": f["content"]})
+    def append(path: str, text: str, source: str) -> None:
+        if path in seen or not text.strip():
+            return
+        seen.add(path)
+        result.append({"path": path, "chunk": text, "source": source})
 
-    # Step 5: cap total context to token budget before returning to LLM
+    # 1. Explicit planner paths (+ transitive Python deps)
+    for f in resolve_dependencies(planned_paths, all_files):
+        append(f["path"], f["content"], "planned")
+
+    # 2. Qdrant hits — always inject chunk text; prefer full file from GitHub when we have it
+    for vc in vector_chunks:
+        path = vc.get("path")
+        if not isinstance(path, str) or not path:
+            continue
+        if path in file_map:
+            append(path, file_map[path], "vector_full")
+        else:
+            chunk_text = vc.get("chunk") or vc.get("text")
+            if isinstance(chunk_text, str):
+                append(path, chunk_text, "vector_chunk")
+
+    # 3. Python deps for vector paths present in the repo (may add files not in top-k)
+    vector_paths = [
+        c["path"]
+        for c in vector_chunks
+        if isinstance(c.get("path"), str) and c["path"] in file_map
+    ]
+    for f in resolve_dependencies(vector_paths, all_files):
+        append(f["path"], f["content"], "vector_dep")
+
     return cap_context(result)

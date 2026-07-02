@@ -1,6 +1,8 @@
+from datetime import date
 from typing import List
 from sqlalchemy.orm import Session
 from app.models.task_log import TaskLog
+from app.db.task_log_partitions import ensure_task_log_partition_cached
 
 
 class LogRepository:
@@ -8,6 +10,7 @@ class LogRepository:
         self.db = db
 
     def create(self, task_id: int, level: str, message: str, metadata: dict = None) -> TaskLog:
+        ensure_task_log_partition_cached(date.today())
         log = TaskLog(
             task_id=task_id,
             level=level.upper(),

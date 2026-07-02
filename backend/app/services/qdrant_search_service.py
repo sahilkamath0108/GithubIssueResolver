@@ -17,11 +17,14 @@ _qdrant = QdrantClient(
 _embedder = OllamaEmbeddingClient()
 
 
-def search_relevant_chunks(repo_full_name: str, query: str, top_k: int = 5) -> list[dict]:
+def search_relevant_chunks(
+    repo_full_name: str, query: str, top_k: int | None = None
+) -> list[dict]:
     """
-    Vector search in Qdrant for the repo's code chunks.
+    Vector search in Qdrant for the repo's code chunks (payload.repo = owner/name).
     Returns list of {path, chunk} where chunk is the stored text payload.
     """
+    top_k = top_k or settings.CONTEXT_SEARCH_TOP_K
     vector = _embedder.embed_text(query)
     try:
         # qdrant-client v1.16+ removed `.search` in favor of `.query_points`.
