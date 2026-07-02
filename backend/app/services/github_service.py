@@ -24,6 +24,59 @@ def repo_full_name(repo_url: str) -> str:
     return f"{parts[-2]}/{parts[-1]}"
 
 
+def repo_full_name_from_issue_url(issue_url: str) -> str:
+    """
+    Extract owner/name from a GitHub issue URL.
+    Example: https://github.com/owner/repo/issues/1 -> owner/repo
+    """
+    parts = issue_url.rstrip("/").split("/")
+    if len(parts) < 5 or parts[-2] != "issues":
+        raise ValueError(f"Invalid GitHub issue URL: {issue_url}")
+    return f"{parts[-4]}/{parts[-3]}"
+
+
+def assert_issue_matches_repo(issue_url: str, repo_url: str) -> None:
+    """Raise ValueError if issue and repo URLs refer to different repositories."""
+    issue_repo = repo_full_name_from_issue_url(issue_url)
+    target_repo = repo_full_name(repo_url)
+    if issue_repo.lower() != target_repo.lower():
+        raise ValueError(
+            f"Issue repo ({issue_repo}) does not match repo_url ({target_repo}). "
+            "Use the same repository for both URLs."
+        )
+
+
+def get_file_contents(repo_url: str, paths: list[str]) -> list[dict]:
+    """Fetch full file contents for specific paths from the repo default branch."""
+    if not paths:
+        return []
+    repo = _parse_repo(repo_url)
+    branch = repo.default_branch
+    files: list[dict] = []
+    for path in paths:
+        try:
+            item = repo.get_contents(path, ref=branch)
+            if isinstance(item, list):
+                continue
+            files.append(
+                {
+                    "path": path,
+                    "content": item.decoded_content.decode("utf-8", errors="ignore"),
+                }
+            )
+        except GithubException:
+            continue
+    return files
+
+
+def merge_repo_files(existing: list[dict], extra: list[dict]) -> list[dict]:
+    """Merge file lists by path; extra overwrites existing."""
+    by_path = {f["path"]: f for f in existing}
+    for f in extra:
+        by_path[f["path"]] = f
+    return list(by_path.values())
+
+
 def get_issue(issue_url: str) -> dict:
     """
     Fetch GitHub issue details — no LLM needed.
