@@ -4,7 +4,7 @@ from app.domain.agents.code_writer import CodeWriterAgent
 from app.domain.agents.fix_agent import FixAgent
 from app.services import github_service
 from app.services import qdrant_search_service
-from app.services.code_context_service import build_context, reconcile_plan_files
+from app.services.code_context_service import build_context, assign_target_files
 from app.indexing.indexer import RepoIndexer
 from app.core.settings import settings
 from app.db.session import SessionLocal
@@ -127,8 +127,8 @@ def node_read_code(state: dict) -> dict:
             },
         )
 
-        # Fix planner paths that don't exist (e.g. invented counter_component.py)
-        ws.plan = reconcile_plan_files(ws.plan, vector_chunks, repo_paths)
+        # Assign edit targets from Qdrant hits (planner only provides search_query)
+        ws.plan = assign_target_files(ws.plan, vector_chunks, repo_paths)
 
         planned_paths = ws.plan.get("files_to_modify", [])
 

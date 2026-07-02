@@ -33,7 +33,7 @@ def cap_context(chunks: List[dict], max_tokens: int = None) -> List[dict]:
     return result
 
 
-def reconcile_plan_files(
+def assign_target_files(
     plan: dict,
     vector_chunks: List[dict],
     repo_paths: Set[str],
@@ -41,26 +41,28 @@ def reconcile_plan_files(
     max_files: int = 5,
 ) -> dict:
     """
-    Ensure files_to_modify point at real repo paths.
-    If the planner invented paths, replace them with top Qdrant vector hits.
+    Pick files_to_modify from Qdrant semantic search hits (must exist in the repo).
+    The planner only supplies search_query — it never guesses paths.
     """
-    planned = list(plan.get("files_to_modify") or [])
-    valid = [p for p in planned if p in repo_paths]
-    if valid:
-        plan["files_to_modify"] = valid[:max_files]
-        return plan
-
-    from_vector: list[str] = []
+    targets: list[str] = []
     seen: set[str] = set()
     for vc in vector_chunks:
         path = vc.get("path")
-        if isinstance(path, str) and path and path not in seen:
-            seen.add(path)
-            from_vector.append(path)
+        if not isinstance(path, str) or not path or path in seen:
+            continue
+        if path not in repo_paths:
+            continue
+        seen.add(path)
+        targets.append(path)
 
-    if from_vector:
-        plan["files_to_modify"] = from_vector[:max_files]
-        plan["_plan_reconciled_from_vector"] = True
+    if not targets:
+        raise ValueError(
+            "No target files found from Qdrant search. "
+            "Ensure the repo is indexed and search_query matches indexed code."
+        )
+
+    plan["files_to_modify"] = targets[:max_files]
+    plan["_files_from_vector_search"] = True
     return plan
 
 
