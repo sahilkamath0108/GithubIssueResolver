@@ -5,7 +5,7 @@ from app.domain.agents.fix_agent import FixAgent
 from app.services import github_service
 from app.services import qdrant_search_service
 from app.services.code_context_service import build_context, assign_target_files
-from app.core.security import sanitize_repo_path
+from app.domain.agents.minimal_patch import filter_substantive_file_changes
 from app.indexing.indexer import RepoIndexer
 from app.core.settings import settings
 from app.db.session import SessionLocal
@@ -300,12 +300,18 @@ def node_create_pr(state: dict) -> dict:
         db.commit()
 
         branch = f"agent/fix-task-{ws.task_id}-r{ws.retry_count}-{int(__import__('time').time())}"
-        for file_path, content in (ws.generated_code or {}).items():
-            safe_path = sanitize_repo_path(file_path)
-            github_service.create_branch_and_commit(
-                ws.repo_url, branch, safe_path, content,
-                commit_message=f"fix: agent patch for task {ws.task_id}",
-            )
+        originals = {f["path"]: f["content"] for f in (ws.repo_files or [])}
+        files_to_commit = filter_substantive_file_changes(ws.generated_code or {}, originals)
+        if not files_to_commit:
+            raise RuntimeError("No substantive changes to commit after filtering whitespace-only diffs.")
+
+        commit_message = f"fix: resolve issue (task {ws.task_id})"
+        github_service.create_branch_with_files(
+            ws.repo_url,
+            branch,
+            files_to_commit,
+            commit_message,
+        )
         pr_url = github_service.create_pull_request(
             ws.repo_url, branch,
             title=f"Agent Fix: Task {ws.task_id}",

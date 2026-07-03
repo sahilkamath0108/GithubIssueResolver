@@ -5,7 +5,7 @@ from contextlib import contextmanager
 
 import redis as redis_lib
 from typing import Optional
-from github import Github, GithubException
+from github import Github, GithubException, InputGitTreeElement
 from app.core.settings import settings
 from app.core.security import (
     assert_repo_allowed,
@@ -179,20 +179,48 @@ def create_pull_request(repo_url: str, branch: str, title: str, body: str, base:
 def create_branch_and_commit(
     repo_url: str, branch: str, file_path: str, content: str, commit_message: str
 ) -> None:
-    safe_path = sanitize_repo_path(file_path)
+    """Legacy single-file commit. Prefer create_branch_with_files for multi-file changes."""
+    create_branch_with_files(repo_url, branch, {file_path: content}, commit_message)
+
+
+def create_branch_with_files(
+    repo_url: str,
+    branch: str,
+    files: dict[str, str],
+    commit_message: str,
+) -> None:
+    """Create branch (if needed) and commit all file changes in a single Git commit."""
+    if not files:
+        raise ValueError("No files to commit.")
+
     repo, _ = _get_repo(repo_url)
-    source = repo.get_branch(repo.default_branch)
+    default_branch = repo.default_branch
+    base_commit = repo.get_branch(default_branch).commit
+    base_tree = repo.get_git_commit(base_commit.sha).tree
+
     try:
-        repo.create_git_ref(ref=f"refs/heads/{branch}", sha=source.commit.sha)
+        repo.create_git_ref(ref=f"refs/heads/{branch}", sha=base_commit.sha)
     except GithubException as exc:
         if exc.status != 422:
             raise
 
-    try:
-        existing = repo.get_contents(safe_path, ref=branch)
-        repo.update_file(safe_path, commit_message, content, existing.sha, branch=branch)
-    except GithubException:
-        repo.create_file(safe_path, commit_message, content, branch=branch)
+    tree_elements = [
+        InputGitTreeElement(
+            path=sanitize_repo_path(path),
+            mode="100644",
+            type="blob",
+            content=content,
+        )
+        for path, content in files.items()
+    ]
+    new_tree = repo.create_git_tree(tree_elements, base_tree)
+    new_commit = repo.create_git_commit(
+        commit_message,
+        new_tree,
+        [repo.get_git_commit(base_commit.sha)],
+    )
+    ref = repo.get_git_ref(f"heads/{branch}")
+    ref.edit(new_commit.sha)
 
 
 def record_webhook_delivery(delivery_id: str) -> bool:
