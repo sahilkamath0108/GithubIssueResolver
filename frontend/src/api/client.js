@@ -44,7 +44,8 @@ export async function retryTask(taskUuid) {
 export async function listTasks(status) {
   const params = status ? { status } : {}
   const { data } = await api.get('/api/v1/status/tasks', { params })
-  return data
+  if (Array.isArray(data)) return data
+  return data.items ?? []
 }
 
 export async function getTaskLogs(taskUuid) {
