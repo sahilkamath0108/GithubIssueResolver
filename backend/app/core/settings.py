@@ -41,7 +41,8 @@ class Settings(BaseSettings):
 
     # Ollama embeddings
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    OLLAMA_EMBEDDING_MODEL: str = "nomic-embed-text"
+    OLLAMA_EMBEDDING_MODEL: str = "embeddinggemma:300m"
+    OLLAMA_EMBED_MAX_CHARS: int = 6000  # embeddinggemma context ~2K tokens
 
     # GitHub indexing / resilience
     GITHUB_API_MAX_RETRIES: int = 5

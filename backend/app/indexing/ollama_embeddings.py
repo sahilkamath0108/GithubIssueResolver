@@ -4,11 +4,19 @@ import logging
 from typing import Any
 
 import httpx
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from app.core.settings import Settings, settings as default_settings
 
 logger = logging.getLogger(__name__)
+
+
+def _retryable_embedding_error(exc: BaseException) -> bool:
+    if isinstance(exc, (httpx.TransportError, httpx.TimeoutException)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code >= 500
+    return False
 
 
 class OllamaEmbeddingClient:
@@ -30,6 +38,20 @@ class OllamaEmbeddingClient:
     def vector_size(self) -> int | None:
         return self._dim
 
+    def _prepare_text(self, text: str) -> str:
+        cleaned = text.replace("\x00", "").strip()
+        if not cleaned:
+            raise ValueError("Cannot embed empty text.")
+        max_chars = max(256, self._settings.OLLAMA_EMBED_MAX_CHARS)
+        if len(cleaned) > max_chars:
+            logger.warning(
+                "Truncating text for Ollama embedding (len=%s max=%s)",
+                len(cleaned),
+                max_chars,
+            )
+            cleaned = cleaned[:max_chars]
+        return cleaned
+
     def _parse_embedding_vector(self, data: dict[str, Any]) -> list[float]:
         vec = data.get("embedding")
         if isinstance(vec, list) and vec:
@@ -39,35 +61,55 @@ class OllamaEmbeddingClient:
             return [float(x) for x in emb[0]]
         return []
 
+    def _request_embedding(self, text: str) -> list[float]:
+        model = self._settings.OLLAMA_EMBEDDING_MODEL
+        legacy_body = {"model": model, "prompt": text}
+        modern_body = {"model": model, "input": text}
+
+        r = self._client.post("/api/embeddings", json=legacy_body)
+        if r.status_code == 200:
+            return self._parse_embedding_vector(r.json())
+
+        # Newer Ollama embedding models (e.g. embeddinggemma:300m) prefer /api/embed.
+        if r.status_code in (404, 500, 501):
+            alt = self._client.post("/api/embed", json=modern_body)
+            if alt.status_code == 200:
+                return self._parse_embedding_vector(alt.json())
+            if alt.status_code >= 400:
+                logger.error(
+                    "Ollama /api/embed failed status=%s model=%s body=%s",
+                    alt.status_code,
+                    model,
+                    alt.text[:500],
+                )
+            alt.raise_for_status()
+
+        if r.status_code >= 400:
+            logger.error(
+                "Ollama /api/embeddings failed status=%s model=%s body=%s",
+                r.status_code,
+                model,
+                r.text[:500],
+            )
+        r.raise_for_status()
+        return self._parse_embedding_vector(r.json())
+
     @retry(
-        retry=retry_if_exception_type((httpx.TransportError, httpx.TimeoutException)),
-        wait=wait_exponential(multiplier=1, min=1, max=20),
-        stop=stop_after_attempt(5),
+        retry=retry_if_exception(_retryable_embedding_error),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(4),
         reraise=True,
     )
     def embed_text(self, text: str) -> list[float]:
         """Single-text embedding; used for queries or dimension probing."""
-        body = {
-            "model": self._settings.OLLAMA_EMBEDDING_MODEL,
-            "prompt": text,
-        }
-        r = self._client.post("/api/embeddings", json=body)
-        if r.status_code == 404:
-            alt = self._client.post(
-                "/api/embed",
-                json={"model": self._settings.OLLAMA_EMBEDDING_MODEL, "input": text},
-            )
-            alt.raise_for_status()
-            vec = self._parse_embedding_vector(alt.json())
-        else:
-            r.raise_for_status()
-            vec = self._parse_embedding_vector(r.json())
+        prepared = self._prepare_text(text)
+        vec = self._request_embedding(prepared)
 
         if not vec:
             raise RuntimeError(
                 f"Ollama returned an empty embedding for model "
                 f"{self._settings.OLLAMA_EMBEDDING_MODEL!r}. "
-                "Use a model that supports embeddings (for example nomic-embed-text), "
+                "Use an embedding model (e.g. embeddinggemma:300m), "
                 "or verify the model name matches `ollama list`."
             )
         if self._dim is None:

@@ -55,6 +55,9 @@ class RepoIndexer:
         self._embedder.close()
         self._qdrant.close()
 
+    def count_vectors(self, repo: str) -> int:
+        return self._qdrant.count_repo_points(repo)
+
     def _load_state(self, repo_full_name: str) -> RepoIndexState | None:
         return (
             self._db.query(RepoIndexState)
@@ -246,8 +249,21 @@ class RepoIndexer:
         chunks = self._chunker.chunk_file(path, text)
         if not chunks:
             return 0
-        embeddings = self._embedder.embed_batch([c.text for c in chunks])
-        tuples = [(c.chunk_id, embeddings[i], c.text) for i, c in enumerate(chunks)]
+
+        tuples: list[tuple[str, list[float], str]] = []
+        for chunk in chunks:
+            try:
+                vec = self._embedder.embed_text(chunk.text)
+                tuples.append((chunk.chunk_id, vec, chunk.text))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Skipping chunk after embedding failure",
+                    extra={"repo": repo, "path": path, "chunk_id": chunk.chunk_id, "error": str(exc)},
+                )
+
+        if not tuples:
+            return 0
+
         self._qdrant.upsert_chunks(
             repo_full_name=repo,
             commit_sha=commit_sha,
@@ -255,4 +271,4 @@ class RepoIndexer:
             blob_sha=blob_sha,
             vectors=tuples,
         )
-        return len(chunks)
+        return len(tuples)

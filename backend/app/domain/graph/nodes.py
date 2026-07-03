@@ -90,18 +90,38 @@ def node_read_code(state: dict) -> dict:
         repo_name = github_service.repo_full_name(ws.repo_url)
         indexer = RepoIndexer(db)
         try:
-            sync_result = indexer.sync_repo(repo_name)
-            log_repo.info(
-                ws.task_id,
-                "Repo index synced",
-                {
-                    "repo": repo_name,
-                    "mode": sync_result.mode,
-                    "commit_sha": sync_result.commit_sha,
-                    "files_indexed": sync_result.files_indexed,
-                    "files_deleted": sync_result.files_deleted,
-                },
-            )
+            try:
+                sync_result = indexer.sync_repo(repo_name)
+                log_repo.info(
+                    ws.task_id,
+                    "Repo index synced",
+                    {
+                        "repo": repo_name,
+                        "mode": sync_result.mode,
+                        "commit_sha": sync_result.commit_sha,
+                        "files_indexed": sync_result.files_indexed,
+                        "files_deleted": sync_result.files_deleted,
+                    },
+                )
+            except Exception as sync_exc:
+                existing_vectors = indexer.count_vectors(repo_name)
+                if existing_vectors == 0:
+                    raise RuntimeError(
+                        f"Repo index sync failed and Qdrant has no vectors for {repo_name}. "
+                        f"Ensure Ollama is running with `{settings.OLLAMA_EMBEDDING_MODEL}` "
+                        f"(`ollama pull {settings.OLLAMA_EMBEDDING_MODEL}`). "
+                        f"Original error: {sync_exc}"
+                    ) from sync_exc
+                log_repo.create(
+                    ws.task_id,
+                    "WARNING",
+                    "Repo index sync failed; continuing with existing Qdrant vectors",
+                    {
+                        "repo": repo_name,
+                        "existing_vectors": existing_vectors,
+                        "error": str(sync_exc),
+                    },
+                )
             db.commit()
         finally:
             indexer.close()
