@@ -1,15 +1,17 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db
+from app.api.deps import get_db, resolve_auth_context
 from app.core.rate_limit import rate_limit_dep
 from app.core.settings import settings
 from app.indexing import RepoIndexer
+from app.indexing.github_client import GitHubRepoClient
 from app.indexing.schemas import IndexRunResult
+from app.repositories.github_user_repo import GitHubUserRepository
 from app.schemas.indexing import RepoIndexResponse, RepoSyncRequest
-from app.services import github_service
+from app.services import auth_service, github_service
 
 logger = logging.getLogger(__name__)
 
@@ -30,14 +32,36 @@ def _to_response(result: IndexRunResult) -> RepoIndexResponse:
 
 
 @router.post("/sync", response_model=RepoIndexResponse, dependencies=rate_limit_dep(times=10))
-def sync_repo_index(payload: RepoSyncRequest, db: Session = Depends(get_db)):
+def sync_repo_index(payload: RepoSyncRequest, request: Request, db: Session = Depends(get_db)):
     """Sync repository index (full / incremental / skip by commit SHA)."""
+    ctx = resolve_auth_context(request, db)
+    if ctx.user is None and not ctx.is_service_account:
+        if settings.oauth_enabled:
+            raise HTTPException(status_code=401, detail="Sign in with GitHub to index repositories.")
+        raise HTTPException(status_code=401, detail="Authentication required.")
+
     try:
         repo = github_service.validate_repo_slug(payload.repo)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    indexer = RepoIndexer(db)
+    access_token = None
+    if ctx.user is not None:
+        access_token = GitHubUserRepository(db).get_access_token(ctx.user.id)
+        if not access_token:
+            raise HTTPException(status_code=401, detail="GitHub token missing. Sign in again.")
+        try:
+            auth_service.verify_repo_access(access_token, repo, require_push=False)
+        except ValueError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+    elif settings.oauth_enabled and not settings.GITHUB_TOKEN:
+        raise HTTPException(
+            status_code=403,
+            detail="API key indexing requires GITHUB_TOKEN when OAuth is enabled.",
+        )
+
+    github_client = GitHubRepoClient(access_token=access_token) if access_token else None
+    indexer = RepoIndexer(db, github=github_client)
     try:
         try:
             result = indexer.sync_repo(repo, force_full=payload.force_full)

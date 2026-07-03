@@ -9,6 +9,7 @@ function resolveBaseUrl() {
 
 export const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
+  withCredentials: true,
 })
 
 api.interceptors.request.use((config) => {
@@ -17,6 +18,39 @@ api.interceptors.request.use((config) => {
   if (key) config.headers['X-API-Key'] = key
   return config
 })
+
+export async function fetchAuthStatus() {
+  const { useAuthStore } = await import('../store/auth')
+  try {
+    const { data } = await api.get('/api/v1/auth/status')
+    if (data.authenticated) {
+      const me = await api.get('/api/v1/auth/me')
+      useAuthStore.getState().setAuthStatus(data.oauth_enabled, me.data)
+    } else {
+      useAuthStore.getState().setAuthStatus(data.oauth_enabled, null)
+    }
+    return data
+  } catch {
+    useAuthStore.getState().setAuthStatus(false, null)
+    return { oauth_enabled: false, authenticated: false }
+  }
+}
+
+export function startGitHubLogin() {
+  const base = resolveBaseUrl()
+  window.location.href = `${base}/api/v1/auth/github/login`
+}
+
+export async function logout() {
+  const { useAuthStore } = await import('../store/auth')
+  await api.post('/api/v1/auth/logout')
+  useAuthStore.getState().clearAuth()
+}
+
+export async function listMyRepos(page = 1) {
+  const { data } = await api.get('/api/v1/auth/repos', { params: { page } })
+  return data
+}
 
 export async function checkHealth() {
   const { data } = await api.get('/health')

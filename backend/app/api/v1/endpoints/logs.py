@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
-from app.api.deps import get_db
+from app.api.deps import assert_task_visible, get_db
 from app.repositories.log_repo import LogRepository
 from app.repositories.task_repo import TaskRepository
 
@@ -8,12 +8,13 @@ router = APIRouter()
 
 
 @router.get("/{task_uuid}/logs")
-def get_task_logs(task_uuid: str, db: Session = Depends(get_db)):
+def get_task_logs(task_uuid: str, request: Request, db: Session = Depends(get_db)):
     """Fetch all logs for a task."""
     task_repo = TaskRepository(db)
     task = task_repo.get_by_uuid(task_uuid)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
+    assert_task_visible(task, request, db)
 
     log_repo = LogRepository(db)
     logs = log_repo.get_by_task(task.id)

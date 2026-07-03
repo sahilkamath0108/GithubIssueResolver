@@ -30,10 +30,13 @@ class GitHubRepoClient:
     Lists repository trees and fetches blob contents without cloning.
     """
 
-    def __init__(self, settings: Settings | None = None):
+    def __init__(self, settings: Settings | None = None, access_token: str | None = None):
         self._settings = settings or default_settings
+        token = access_token or self._settings.GITHUB_TOKEN
+        if not token:
+            raise RuntimeError("GitHub access token is required for indexing.")
         self._gh = Github(
-            login_or_token=self._settings.GITHUB_TOKEN,
+            login_or_token=token,
             per_page=100,
         )
 

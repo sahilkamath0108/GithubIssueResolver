@@ -25,7 +25,7 @@ def retry_failed_task(task_id: int):
         log_repo.info(task_id, f"Manual retry triggered (attempt {task.retry_count + 1})")
 
         run_workflow_task.apply_async(
-            args=[task_id, task.issue_url, task.repo_url],
+            args=[task_id, task.issue_url, task.repo_url, task.github_user_id],
             queue="main_queue",
         )
     finally:

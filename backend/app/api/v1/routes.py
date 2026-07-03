@@ -1,7 +1,9 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import workflow, status, logs, indexing, webhooks
+from app.api.v1.endpoints import workflow, status, logs, indexing, webhooks, auth
 
 api_router = APIRouter()
+
+api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 
 api_router.include_router(workflow.router, prefix="/workflow", tags=["workflow"])
 api_router.include_router(status.router, prefix="/status", tags=["status"])

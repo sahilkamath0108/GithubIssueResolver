@@ -1,6 +1,6 @@
 import uuid
 import enum
-from sqlalchemy import Column, BigInteger, Text, Integer, VARCHAR, TIMESTAMP, Enum as SAEnum, Index
+from sqlalchemy import Column, BigInteger, Text, Integer, VARCHAR, TIMESTAMP, Enum as SAEnum, Index, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func, text
@@ -21,6 +21,7 @@ class Task(Base):
     uuid = Column(UUID(as_uuid=True), unique=True, nullable=False, default=uuid.uuid4)
     issue_url = Column(Text, nullable=False)
     repo_url = Column(Text, nullable=False)
+    github_user_id = Column(BigInteger, ForeignKey("github_users.id"), nullable=True, index=True)
     status = Column(SAEnum(TaskStatus), nullable=False, default=TaskStatus.queued)
     current_step = Column(VARCHAR(255), nullable=False, default="")
     retry_count = Column(Integer, default=0)
@@ -30,6 +31,7 @@ class Task(Base):
     created_at = Column(TIMESTAMP, nullable=False, server_default=func.now())
     updated_at = Column(TIMESTAMP, nullable=False, server_default=func.now(), onupdate=func.now())
 
+    github_user = relationship("GitHubUser", back_populates="tasks")
     steps = relationship("TaskStep", back_populates="task", cascade="all, delete-orphan")
     logs = relationship("TaskLog", back_populates="task", cascade="all, delete-orphan")
     result = relationship("TaskResult", back_populates="task", uselist=False, cascade="all, delete-orphan")

@@ -16,9 +16,9 @@ from app.models.repo_index_state import RepoIndexState
 logger = logging.getLogger(__name__)
 
 
-def _fetch_blob_text(repo: str, blob_sha: str, settings: Settings) -> str:
+def _fetch_blob_text(repo: str, blob_sha: str, settings: Settings, access_token: str | None = None) -> str:
     """Worker-safe: each call uses its own GitHub client (PyGithub is not documented as thread-safe)."""
-    return GitHubRepoClient(settings).get_blob_text(repo, blob_sha)
+    return GitHubRepoClient(settings, access_token=access_token).get_blob_text(repo, blob_sha)
 
 
 class RepoIndexer:

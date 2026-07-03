@@ -69,12 +69,18 @@ def _set_cached(prompt: str, response: dict) -> None:
 
 
 def call_llm(prompt: str, use_cache: bool = True) -> str:
+    """Single user-message call (legacy). Prefer call_llm_messages for agent prompts."""
+    return call_llm_messages([{"role": "user", "content": prompt}], use_cache=use_cache)
+
+
+def call_llm_messages(messages: list[dict], use_cache: bool = True) -> str:
     """
-    Call Groq chat LLM with optional Redis caching.
+    Call Groq chat LLM with structured messages (system + user separation).
     Cache hit = zero LLM cost for repeated identical prompts.
     """
+    cache_input = json.dumps(messages, sort_keys=True)
     if use_cache:
-        cached = _get_cached(prompt)
+        cached = _get_cached(cache_input)
         if cached:
             text = cached["text"]
             _last_llm_raw.set(text)
@@ -85,7 +91,7 @@ def call_llm(prompt: str, use_cache: bool = True) -> str:
 
     completion = _groq.chat.completions.create(
         model=settings.GROQ_MODEL,
-        messages=[{"role": "user", "content": prompt}],
+        messages=messages,
         temperature=0.2,
     )
     text = ""
@@ -95,7 +101,6 @@ def call_llm(prompt: str, use_cache: bool = True) -> str:
             text = msg.content or ""
 
     if not isinstance(text, str) or not text.strip():
-        # Provide a helpful error payload for debugging.
         try:
             payload = completion.model_dump()
         except Exception:
@@ -108,17 +113,19 @@ def call_llm(prompt: str, use_cache: bool = True) -> str:
         )
 
     if use_cache:
-        _set_cached(prompt, {"text": text})
+        _set_cached(cache_input, {"text": text})
 
     _last_llm_raw.set(text)
     return text
 
 
-def call_llm_json(prompt: str, use_cache: bool = True) -> dict:
-    """
-    Call LLM and parse JSON response. Raises ValueError if not valid JSON.
-    """
-    raw = call_llm(prompt, use_cache=use_cache)
+def call_llm_json_messages(messages: list[dict], use_cache: bool = True) -> dict:
+    """Call LLM with message list and parse JSON response."""
+    raw = call_llm_messages(messages, use_cache=use_cache)
+    return _parse_llm_json(raw, messages)
+
+
+def _parse_llm_json(raw: str, repair_context: list[dict] | str) -> dict:
     cleaned = raw.strip()
 
     # Strip markdown code fences if present
@@ -196,3 +203,9 @@ def call_llm_json(prompt: str, use_cache: bool = True) -> dict:
                 "LLM returned invalid JSON even after repair attempt. "
                 "See logs for raw/repaired output."
             )
+
+
+def call_llm_json(prompt: str, use_cache: bool = True) -> dict:
+    """Call LLM and parse JSON response. Raises ValueError if not valid JSON."""
+    return call_llm_json_messages([{"role": "user", "content": prompt}], use_cache=use_cache)
+

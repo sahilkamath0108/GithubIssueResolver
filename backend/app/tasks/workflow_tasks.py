@@ -4,8 +4,10 @@ from app.db.session import SessionLocal
 from app.repositories.task_repo import TaskRepository
 from app.repositories.log_repo import LogRepository
 from app.repositories.dlq_repo import DLQRepository
+from app.repositories.github_user_repo import GitHubUserRepository
 from app.models.task import TaskStatus
 from app.domain.graph.workflow_graph import run_workflow
+from app.services import github_service
 
 
 def _write_dlq(
@@ -28,27 +30,33 @@ def _write_dlq(
 
 
 @celery_app.task(name="app.tasks.workflow_tasks.run_workflow_task", bind=True, max_retries=0)
-def run_workflow_task(self, task_id: int, issue_url: str, repo_url: str):
+def run_workflow_task(self, task_id: int, issue_url: str, repo_url: str, github_user_id: int | None = None):
     """
     Main Celery task — orchestrates the full agent workflow.
     All failure paths write to DLQ.
+    Uses the submitting user's GitHub token when github_user_id is set.
     """
     db = SessionLocal()
     task_repo = TaskRepository(db)
     log_repo = LogRepository(db)
     dlq_repo = DLQRepository(db)
 
+    user_token = None
+    if github_user_id:
+        user_token = GitHubUserRepository(db).get_access_token(github_user_id)
+
     try:
         task_repo.update_status(task_id, TaskStatus.running, current_step="planning")
         log_repo.info(task_id, "Workflow started", {"issue_url": issue_url})
         db.commit()
 
-        final_state = run_workflow(
-            task_id,
-            issue_url,
-            repo_url,
-            max_retries=settings.MAX_RETRIES,
-        )
+        with github_service.github_token_context(user_token):
+            final_state = run_workflow(
+                task_id,
+                issue_url,
+                repo_url,
+                max_retries=settings.MAX_RETRIES,
+            )
 
         if final_state.get("failed"):
             reason = final_state.get("failure_reason", "Unknown failure")

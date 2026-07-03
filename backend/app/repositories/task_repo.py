@@ -7,8 +7,8 @@ class TaskRepository:
     def __init__(self, db: Session):
         self.db = db
 
-    def create(self, issue_url: str, repo_url: str) -> Task:
-        task = Task(issue_url=issue_url, repo_url=repo_url)
+    def create(self, issue_url: str, repo_url: str, github_user_id: int | None = None) -> Task:
+        task = Task(issue_url=issue_url, repo_url=repo_url, github_user_id=github_user_id)
         self.db.add(task)
         self.db.commit()
         self.db.refresh(task)
@@ -58,10 +58,13 @@ class TaskRepository:
         self,
         *,
         status: TaskStatus | None = None,
+        github_user_id: int | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> List[Task]:
         q = self.db.query(Task).order_by(Task.created_at.desc())
         if status is not None:
             q = q.filter(Task.status == status)
+        if github_user_id is not None:
+            q = q.filter(Task.github_user_id == github_user_id)
         return q.offset(offset).limit(limit).all()

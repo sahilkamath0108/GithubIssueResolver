@@ -1,5 +1,8 @@
 import json
 import hashlib
+import contextvars
+from contextlib import contextmanager
+
 import redis as redis_lib
 from typing import Optional
 from github import Github, GithubException
@@ -11,15 +14,39 @@ from app.core.security import (
     sanitize_repo_path,
 )
 
-_github = Github(settings.GITHUB_TOKEN)
+_github_token_ctx: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "github_token", default=None
+)
 _cache = redis_lib.Redis.from_url(settings.REDIS_URL, decode_responses=True)
 _REPO_CACHE_TTL = 60 * 60 * 6  # 6 hours
 
 
-def _get_repo(repo_url: str):
+def _resolve_token(override: str | None = None) -> str:
+    token = override or _github_token_ctx.get() or settings.GITHUB_TOKEN
+    if not token:
+        raise RuntimeError(
+            "No GitHub token available. Sign in with GitHub or configure GITHUB_TOKEN for webhooks."
+        )
+    return token
+
+
+def _get_github(token: str | None = None) -> Github:
+    return Github(_resolve_token(token))
+
+
+@contextmanager
+def github_token_context(token: str | None):
+    reset = _github_token_ctx.set(token)
+    try:
+        yield
+    finally:
+        _github_token_ctx.reset(reset)
+
+
+def _get_repo(repo_url: str, token: str | None = None):
     slug = parse_github_repo_url(repo_url)
     assert_repo_allowed(slug)
-    return _github.get_repo(slug), slug
+    return _get_github(token).get_repo(slug), slug
 
 
 def repo_full_name(repo_url: str) -> str:
@@ -84,7 +111,7 @@ def merge_repo_files(existing: list[dict], extra: list[dict]) -> list[dict]:
 def get_issue(issue_url: str) -> dict:
     slug, issue_number = parse_github_issue_url(issue_url)
     assert_repo_allowed(slug)
-    repo = _github.get_repo(slug)
+    repo = _get_github().get_repo(slug)
     issue = repo.get_issue(issue_number)
     return {
         "number": issue.number,

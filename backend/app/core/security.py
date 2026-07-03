@@ -24,10 +24,19 @@ def validate_production_settings() -> list[str]:
     issues: list[str] = []
     if settings.ENVIRONMENT.lower() != "production":
         return issues
-    if not settings.API_KEY:
-        issues.append("API_KEY must be set when ENVIRONMENT=production")
+    if settings.oauth_enabled:
+        if not settings.JWT_SECRET or len(settings.JWT_SECRET) < 32:
+            issues.append("JWT_SECRET must be at least 32 characters when OAuth is enabled in production")
+        if not settings.AUTH_COOKIE_SECURE:
+            issues.append("AUTH_COOKIE_SECURE should be true in production (HTTPS)")
+    elif not settings.API_KEY:
+        issues.append("API_KEY must be set when ENVIRONMENT=production and OAuth is not configured")
     if not settings.GITHUB_WEBHOOK_SECRET:
         issues.append("GITHUB_WEBHOOK_SECRET must be set when ENVIRONMENT=production")
+    if settings.oauth_enabled and not settings.GITHUB_TOKEN:
+        issues.append(
+            "GITHUB_TOKEN is recommended for webhooks/background jobs when OAuth is enabled"
+        )
     if not settings.repo_allowlist:
         issues.append("REPO_ALLOWLIST should be set when ENVIRONMENT=production")
     return issues

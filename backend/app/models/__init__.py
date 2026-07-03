@@ -1,3 +1,4 @@
+from app.models.github_user import GitHubUser
 from app.models.task import Task
 from app.models.task_step import TaskStep
 from app.models.task_log import TaskLog

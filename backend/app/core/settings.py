@@ -15,10 +15,19 @@ class Settings(BaseSettings):
     GROQ_BASE_URL: str = "https://api.groq.com"
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
 
-    # GitHub
-    GITHUB_TOKEN: str
+    # GitHub — server PAT for webhooks/background jobs when OAuth is enabled
+    GITHUB_TOKEN: str = ""
     GITHUB_WEBHOOK_SECRET: str = ""
     REQUIRE_WEBHOOK_SECRET: bool = False  # if true, reject webhooks when secret unset
+
+    # GitHub OAuth (user login — per-user repo access for submit/index)
+    GITHUB_OAUTH_CLIENT_ID: str = ""
+    GITHUB_OAUTH_CLIENT_SECRET: str = ""
+    GITHUB_OAUTH_CALLBACK_URL: str = ""
+    JWT_SECRET: str = ""
+    JWT_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
+    AUTH_COOKIE_NAME: str = "session"
+    AUTH_COOKIE_SECURE: bool = False  # set true in production behind HTTPS
 
     # Comma-separated owner/name repos allowed for workflow + indexing (empty = all)
     REPO_ALLOWLIST: str = ""
@@ -97,6 +106,15 @@ class Settings(BaseSettings):
     @property
     def repo_allowlist(self) -> frozenset[str]:
         return frozenset(p.lower() for p in self.repo_allowlist_raw)
+
+    @property
+    def oauth_enabled(self) -> bool:
+        return bool(
+            self.GITHUB_OAUTH_CLIENT_ID
+            and self.GITHUB_OAUTH_CLIENT_SECRET
+            and self.GITHUB_OAUTH_CALLBACK_URL
+            and self.JWT_SECRET
+        )
 
 
 settings = Settings()

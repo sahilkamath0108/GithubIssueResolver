@@ -28,6 +28,19 @@ def ensure_schema_compat(conn):
         END
         $$;
     """))
+    conn.execute(text("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'tasks' AND column_name = 'github_user_id'
+            ) THEN
+                ALTER TABLE tasks ADD COLUMN github_user_id BIGINT NULL;
+                CREATE INDEX IF NOT EXISTS ix_tasks_github_user_id ON tasks (github_user_id);
+            END IF;
+        END
+        $$;
+    """))
 
 
 def init():

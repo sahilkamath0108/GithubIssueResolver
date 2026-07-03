@@ -3,15 +3,18 @@ import { Link, useLocation } from 'react-router-dom'
 import {
   Bot,
   Database,
+  Github,
   LayoutDashboard,
   ListChecks,
+  LogOut,
   Menu,
   Settings,
   SquarePen,
   X,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { checkHealth, listTasks } from '@/api/client'
+import { checkHealth, fetchAuthStatus, listTasks, logout, startGitHubLogin } from '@/api/client'
+import { useAuthStore } from '@/store/auth'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { Button, buttonVariants } from '@/components/ui/button'
 
@@ -79,7 +82,7 @@ function NavLinks({ pathname, runningCount, onNavigate }) {
   )
 }
 
-function SidebarInner({ pathname, runningCount, healthOk, onNavigate }) {
+function SidebarInner({ pathname, runningCount, healthOk, onNavigate, user, oauthEnabled, onLogout }) {
   return (
     <div className="flex h-full flex-col gap-6 p-4">
       <div className="px-2 pt-2">
@@ -88,6 +91,31 @@ function SidebarInner({ pathname, runningCount, healthOk, onNavigate }) {
       <div className="flex-1">
         <NavLinks pathname={pathname} runningCount={runningCount} onNavigate={onNavigate} />
       </div>
+      {oauthEnabled && (
+        <div className="rounded-lg border border-border bg-card p-3">
+          {user ? (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                {user.avatar_url ? (
+                  <img src={user.avatar_url} alt="" className="size-7 rounded-full" />
+                ) : (
+                  <Github className="size-5 text-muted-foreground" />
+                )}
+                <span className="truncate text-sm font-medium">{user.login}</span>
+              </div>
+              <Button variant="ghost" size="sm" className="w-full justify-start gap-2" onClick={onLogout}>
+                <LogOut className="size-3.5" />
+                Sign out
+              </Button>
+            </div>
+          ) : (
+            <Button variant="outline" size="sm" className="w-full gap-2" onClick={startGitHubLogin}>
+              <Github className="size-3.5" />
+              Sign in with GitHub
+            </Button>
+          )}
+        </div>
+      )}
       <div className="rounded-lg border border-border bg-card p-3">
         <div className="flex items-center gap-2 text-xs font-medium text-foreground">
           <span
@@ -139,6 +167,17 @@ export function AppShell({ children }) {
   const [open, setOpen] = useState(false)
   const [healthOk, setHealthOk] = useState(false)
   const [runningCount, setRunningCount] = useState(0)
+  const user = useAuthStore((s) => s.user)
+  const oauthEnabled = useAuthStore((s) => s.oauthEnabled)
+
+  async function handleLogout() {
+    await logout()
+    window.location.href = '/login'
+  }
+
+  useEffect(() => {
+    fetchAuthStatus()
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -172,6 +211,9 @@ export function AppShell({ children }) {
             pathname={pathname}
             runningCount={runningCount}
             healthOk={healthOk}
+            user={user}
+            oauthEnabled={oauthEnabled}
+            onLogout={handleLogout}
           />
         </div>
       </aside>
@@ -182,6 +224,9 @@ export function AppShell({ children }) {
           runningCount={runningCount}
           healthOk={healthOk}
           onNavigate={() => setOpen(false)}
+          user={user}
+          oauthEnabled={oauthEnabled}
+          onLogout={handleLogout}
         />
       </MobileSheet>
 
