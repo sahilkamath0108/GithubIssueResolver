@@ -47,6 +47,14 @@ class GitHubUserRepository:
 
     def get_access_token(self, user_id: int) -> str | None:
         user = self.get_by_id(user_id)
-        if not user:
+        if not user or not user.access_token_encrypted:
             return None
         return decrypt_token(user.access_token_encrypted)
+
+    def clear_access_token(self, user_id: int) -> None:
+        user = self.get_by_id(user_id)
+        if not user:
+            return
+        user.access_token_encrypted = ""
+        user.token_scope = None
+        self.db.commit()

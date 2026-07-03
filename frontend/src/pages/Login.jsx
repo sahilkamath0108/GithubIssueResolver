@@ -1,7 +1,7 @@
 import { Github } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { fetchAuthStatus, startGitHubLogin } from '@/api/client'
+import { fetchAuthStatus, openGitHubAccountSwitch, startGitHubLogin } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
 import { PageHeader } from '@/components/page-header'
 import { Button } from '@/components/ui/button'
@@ -61,6 +61,17 @@ export default function LoginPage() {
             <Github className="size-4" />
             Continue with GitHub
           </Button>
+          <p className="text-center text-xs text-muted-foreground">
+            Wrong account?{' '}
+            <button
+              type="button"
+              className="text-primary underline-offset-2 hover:underline"
+              onClick={openGitHubAccountSwitch}
+            >
+              Sign out of GitHub
+            </button>{' '}
+            in a new tab, then return here and sign in again.
+          </p>
         </CardContent>
       </Card>
     </div>

@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
+import json
 
 import httpx
 import jwt
@@ -47,6 +48,37 @@ def build_github_login_url(state: str) -> str:
         "state": state,
     }
     return f"{_GITHUB_AUTHORIZE}?{urlencode(params)}"
+
+
+def github_session_logout_url(return_to: str | None = None) -> str:
+    """End the GitHub browser session so the next OAuth flow can use another account."""
+    url = "https://github.com/logout"
+    if return_to:
+        url = f"{url}?{urlencode({'return_to': return_to})}"
+    return url
+
+
+def revoke_github_token(access_token: str) -> None:
+    """Revoke this app's OAuth grant so the token cannot be reused."""
+    if not access_token or not settings.GITHUB_OAUTH_CLIENT_ID:
+        return
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.request(
+                "DELETE",
+                f"https://api.github.com/applications/{settings.GITHUB_OAUTH_CLIENT_ID}/token",
+                auth=(settings.GITHUB_OAUTH_CLIENT_ID, settings.GITHUB_OAUTH_CLIENT_SECRET),
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "Content-Type": "application/json",
+                },
+                content=json.dumps({"access_token": access_token}),
+            )
+            if resp.status_code not in (204, 404):
+                resp.raise_for_status()
+    except Exception:
+        # Best-effort — local session is still cleared even if GitHub revoke fails.
+        pass
 
 
 async def exchange_code_for_token(code: str) -> tuple[str, str | None]:

@@ -172,7 +172,6 @@ export function AppShell({ children }) {
 
   async function handleLogout() {
     await logout()
-    window.location.href = '/login'
   }
 
   useEffect(() => {

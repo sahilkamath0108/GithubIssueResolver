@@ -44,7 +44,13 @@ export function startGitHubLogin() {
 export async function logout() {
   const { useAuthStore } = await import('../store/auth')
   await api.post('/api/v1/auth/logout')
-  useAuthStore.getState().clearAuth()
+  useAuthStore.getState().setAuthStatus(useAuthStore.getState().oauthEnabled, null)
+  window.location.href = '/login'
+}
+
+/** Open GitHub sign-out in a new tab — use when switching to a different GitHub account. */
+export function openGitHubAccountSwitch() {
+  window.open('https://github.com/logout', '_blank', 'noopener,noreferrer')
 }
 
 export async function listMyRepos(page = 1) {

@@ -13,6 +13,7 @@ _PUBLIC_PATHS = {
     "/api/v1/auth/status",
     "/api/v1/auth/github/login",
     "/api/v1/auth/github/callback",
+    "/api/v1/auth/logout",
 }
 
 if settings.EXPOSE_DOCS:

@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, get_db
+from app.api.deps import get_current_user, get_db, resolve_auth_context
 from app.core.settings import settings
 from app.repositories.github_user_repo import GitHubUserRepository
 from app.schemas.auth import AuthStatusResponse, GitHubRepoSummary, UserProfile
@@ -113,6 +113,26 @@ async def github_callback(
 
 
 @router.post("/logout")
-def logout(response: Response):
-    response.delete_cookie(settings.AUTH_COOKIE_NAME)
-    return {"message": "Logged out."}
+def logout(request: Request, response: Response, db: Session = Depends(get_db)):
+    """Clear app session and revoke stored GitHub token. Stays in the app (no GitHub redirect)."""
+    ctx = resolve_auth_context(request, db)
+    user_repo = GitHubUserRepository(db)
+
+    if ctx.user is not None:
+        token = user_repo.get_access_token(ctx.user.id)
+        if token:
+            auth_service.revoke_github_token(token)
+        user_repo.clear_access_token(ctx.user.id)
+
+    response.delete_cookie(
+        key=settings.AUTH_COOKIE_NAME,
+        path="/",
+        httponly=True,
+        samesite="lax",
+        secure=settings.AUTH_COOKIE_SECURE,
+    )
+
+    return {
+        "message": "Logged out.",
+        "redirect_url": _frontend_redirect("/login"),
+    }
