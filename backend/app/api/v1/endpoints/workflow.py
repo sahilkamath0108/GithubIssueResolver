@@ -1,16 +1,18 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+
 from app.api.deps import get_db
+from app.core.rate_limit import rate_limit_dep
 from app.repositories.task_repo import TaskRepository
-from app.services import github_service
 from app.schemas.workflow import WorkflowSubmitRequest, WorkflowSubmitResponse, TaskStatusResponse
 from app.models.task import TaskStatus
+from app.services import github_service
 from app.tasks.workflow_tasks import run_workflow_task
 
 router = APIRouter()
 
 
-@router.post("/submit", response_model=WorkflowSubmitResponse)
+@router.post("/submit", response_model=WorkflowSubmitResponse, dependencies=rate_limit_dep())
 def submit_workflow(payload: WorkflowSubmitRequest, db: Session = Depends(get_db)):
     """Submit a GitHub issue for agent processing."""
     try:
@@ -53,7 +55,7 @@ def get_task_status(task_uuid: str, db: Session = Depends(get_db)):
     )
 
 
-@router.post("/{task_uuid}/retry")
+@router.post("/{task_uuid}/retry", dependencies=rate_limit_dep(times=10))
 def retry_task(task_uuid: str, db: Session = Depends(get_db)):
     """Manually retry a failed task."""
     from app.tasks.retry_tasks import retry_failed_task

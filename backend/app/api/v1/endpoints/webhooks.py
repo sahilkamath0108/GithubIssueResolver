@@ -4,14 +4,14 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
-
-from app.api.deps import get_db
-from app.core.settings import settings
-from app.repositories.task_repo import TaskRepository
-from app.services import github_service
 from uuid import UUID
 
+from app.api.deps import get_db
+from app.core.security import require_webhook_secret
+from app.core.settings import settings
+from app.repositories.task_repo import TaskRepository
 from app.schemas.workflow import WorkflowSubmitResponse
+from app.services import github_service
 from app.tasks.workflow_tasks import run_workflow_task
 
 logger = logging.getLogger(__name__)
@@ -20,11 +20,12 @@ router = APIRouter()
 
 
 def _verify_github_signature(secret: str, body: bytes, signature_header: str | None) -> None:
-    """
-    Verify X-Hub-Signature-256 header for GitHub webhooks.
-    If `secret` is empty, verification is skipped (not recommended).
-    """
     if not secret:
+        if settings.REQUIRE_WEBHOOK_SECRET or settings.is_production:
+            raise HTTPException(
+                status_code=503,
+                detail="GITHUB_WEBHOOK_SECRET is required but not configured.",
+            )
         return
     if not signature_header or not signature_header.startswith("sha256="):
         raise HTTPException(status_code=401, detail="Missing X-Hub-Signature-256.")
@@ -37,16 +38,21 @@ def _verify_github_signature(secret: str, body: bytes, signature_header: str | N
 
 @router.post("/github/issues", response_model=WorkflowSubmitResponse)
 async def github_issues_webhook(request: Request, db: Session = Depends(get_db)):
-    """
-    GitHub 'issues' webhook.
+    """GitHub 'issues' webhook — signature + delivery dedup; queues workflow on open/reopen."""
+    require_webhook_secret()
 
-    - Verifies signature (if GITHUB_WEBHOOK_SECRET is set).
-    - On relevant issue actions, creates a Task and enqueues the workflow.
-    """
     event = request.headers.get("X-GitHub-Event", "")
     if event and event != "issues":
-        # keep endpoint narrow and explicit
         raise HTTPException(status_code=400, detail=f"Unsupported event: {event}")
+
+    delivery_id = request.headers.get("X-GitHub-Delivery", "")
+    if delivery_id and not github_service.record_webhook_delivery(delivery_id):
+        return WorkflowSubmitResponse(
+            task_id=0,
+            task_uuid=UUID("00000000-0000-0000-0000-000000000000"),
+            status="ignored",
+            message=f"Duplicate delivery {delivery_id} — skipped.",
+        )
 
     body = await request.body()
     _verify_github_signature(
@@ -55,10 +61,11 @@ async def github_issues_webhook(request: Request, db: Session = Depends(get_db))
         request.headers.get("X-Hub-Signature-256"),
     )
 
-    payload = await request.json()
+    import json
+
+    payload = json.loads(body)
     action = payload.get("action")
-    # common actionable states: opened, edited, reopened, labeled
-    allowed_actions = {"opened", "edited", "reopened", "labeled"}
+    allowed_actions = {"opened", "reopened"}
     if action not in allowed_actions:
         return WorkflowSubmitResponse(
             task_id=0,
@@ -97,4 +104,3 @@ async def github_issues_webhook(request: Request, db: Session = Depends(get_db))
         status=task.status.value,
         message=f"Webhook accepted ({action}); task queued.",
     )
-

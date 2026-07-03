@@ -53,3 +53,15 @@ class TaskRepository:
 
     def list_by_status(self, status: TaskStatus) -> List[Task]:
         return self.db.query(Task).filter(Task.status == status).all()
+
+    def list_recent(
+        self,
+        *,
+        status: TaskStatus | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Task]:
+        q = self.db.query(Task).order_by(Task.created_at.desc())
+        if status is not None:
+            q = q.filter(Task.status == status)
+        return q.offset(offset).limit(limit).all()
