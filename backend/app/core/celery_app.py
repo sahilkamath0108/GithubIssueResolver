@@ -1,9 +1,25 @@
+from urllib.parse import urlparse, urlunparse
+
 from celery import Celery
+
+from app.core.settings import settings
+
+
+def _redis_backend_url(redis_url: str) -> str:
+    """Use database 1 for Celery results when broker is database 0."""
+    parsed = urlparse(redis_url)
+    path = parsed.path or "/0"
+    if path.endswith("/0"):
+        path = path[:-2] + "/1"
+    elif path in ("", "/"):
+        path = "/1"
+    return urlunparse(parsed._replace(path=path))
+
 
 celery_app = Celery(
     "multiagent",
-    broker="redis://redis:6379/0",
-    backend="redis://redis:6379/1",
+    broker=settings.REDIS_URL,
+    backend=_redis_backend_url(settings.REDIS_URL),
     include=[
         "app.tasks.workflow_tasks",
         "app.tasks.retry_tasks",
@@ -20,7 +36,6 @@ celery_app.conf.task_routes = {
 
 @celery_app.on_after_configure.connect
 def _ensure_db_partitions(**_kwargs):
-    """Worker may start without hitting FastAPI lifespan — ensure partitions exist."""
     from app.db.init_db import init
 
     init()

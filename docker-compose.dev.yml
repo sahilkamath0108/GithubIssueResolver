@@ -1,0 +1,21 @@
+# Optional override for local debugging — exposes internal service ports to the host.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+# docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+
+services:
+  postgres:
+    ports:
+      - "5432:5432"
+
+  redis:
+    ports:
+      - "6379:6379"
+
+  qdrant:
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+
+  backend:
+    ports:
+      - "8000:8000"
