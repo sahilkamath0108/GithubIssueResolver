@@ -5,6 +5,7 @@ from app.domain.agents.fix_agent import FixAgent
 from app.services import github_service
 from app.services import qdrant_search_service
 from app.services.code_context_service import build_context, assign_target_files
+from app.core.security import sanitize_repo_path
 from app.indexing.indexer import RepoIndexer
 from app.core.settings import settings
 from app.db.session import SessionLocal
@@ -280,8 +281,9 @@ def node_create_pr(state: dict) -> dict:
 
         branch = f"agent/fix-task-{ws.task_id}-r{ws.retry_count}-{int(__import__('time').time())}"
         for file_path, content in (ws.generated_code or {}).items():
+            safe_path = sanitize_repo_path(file_path)
             github_service.create_branch_and_commit(
-                ws.repo_url, branch, file_path, content,
+                ws.repo_url, branch, safe_path, content,
                 commit_message=f"fix: agent patch for task {ws.task_id}",
             )
         pr_url = github_service.create_pull_request(
@@ -304,12 +306,12 @@ def node_create_pr(state: dict) -> dict:
 
 
 def node_send_to_dlq(state: dict) -> dict:
-    """Terminal failure node — mark as failed for DLQ processing."""
+    """Terminal failure node — mark failed (DLQ row written by Celery task)."""
     ws = WorkflowStateSchema(**state)
     db, task_repo, log_repo = _get_repos()
     try:
         ws.failed = True
-        ws.failure_reason = f"Max retries exceeded. Last error: {ws.test_output}"
+        ws.failure_reason = ws.failure_reason or f"Max retries exceeded. Last error: {ws.test_output}"
 
         task_repo.update_status(ws.task_id, TaskStatus.failed, error=ws.failure_reason)
         log_repo.error(ws.task_id, "Max retries exceeded — sent to DLQ")

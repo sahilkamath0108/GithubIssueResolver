@@ -3,6 +3,18 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.core.security import sanitize_repo_path
+
+
+def _safe_paths(files: dict[str, str]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for path, content in files.items():
+        try:
+            out[sanitize_repo_path(path)] = content
+        except ValueError:
+            continue
+    return out
+
 
 def parse_changes_to_files(changes: Any) -> dict[str, str] | None:
     """
@@ -13,7 +25,8 @@ def parse_changes_to_files(changes: Any) -> dict[str, str] | None:
     """
     if isinstance(changes, dict) and changes:
         if all(isinstance(k, str) and isinstance(v, str) for k, v in changes.items()):
-            return dict(changes)
+            safe = _safe_paths(changes)
+            return safe if safe else None
         return None
     if not isinstance(changes, list):
         return None
@@ -27,5 +40,8 @@ def parse_changes_to_files(changes: Any) -> dict[str, str] | None:
         raw = item.get("content")
         if not isinstance(raw, str):
             continue
-        out[path] = raw
+        try:
+            out[sanitize_repo_path(path)] = raw
+        except ValueError:
+            continue
     return out if out else None

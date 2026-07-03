@@ -4,39 +4,34 @@ import redis as redis_lib
 from typing import Optional
 from github import Github, GithubException
 from app.core.settings import settings
+from app.core.security import (
+    assert_repo_allowed,
+    parse_github_issue_url,
+    parse_github_repo_url,
+    sanitize_repo_path,
+)
 
 _github = Github(settings.GITHUB_TOKEN)
 _cache = redis_lib.Redis.from_url(settings.REDIS_URL, decode_responses=True)
 _REPO_CACHE_TTL = 60 * 60 * 6  # 6 hours
 
 
-def _parse_repo(repo_url: str):
-    """Extract owner/repo from GitHub URL."""
-    parts = repo_url.rstrip("/").split("/")
-    return _github.get_repo(f"{parts[-2]}/{parts[-1]}")
+def _get_repo(repo_url: str):
+    slug = parse_github_repo_url(repo_url)
+    assert_repo_allowed(slug)
+    return _github.get_repo(slug), slug
+
 
 def repo_full_name(repo_url: str) -> str:
-    """
-    Normalize a GitHub repository URL to "owner/name".
-    Example: "https://github.com/owner/name" -> "owner/name"
-    """
-    parts = repo_url.rstrip("/").split("/")
-    return f"{parts[-2]}/{parts[-1]}"
+    return parse_github_repo_url(repo_url)
 
 
 def repo_full_name_from_issue_url(issue_url: str) -> str:
-    """
-    Extract owner/name from a GitHub issue URL.
-    Example: https://github.com/owner/repo/issues/1 -> owner/repo
-    """
-    parts = issue_url.rstrip("/").split("/")
-    if len(parts) < 5 or parts[-2] != "issues":
-        raise ValueError(f"Invalid GitHub issue URL: {issue_url}")
-    return f"{parts[-4]}/{parts[-3]}"
+    slug, _ = parse_github_issue_url(issue_url)
+    return slug
 
 
 def assert_issue_matches_repo(issue_url: str, repo_url: str) -> None:
-    """Raise ValueError if issue and repo URLs refer to different repositories."""
     issue_repo = repo_full_name_from_issue_url(issue_url)
     target_repo = repo_full_name(repo_url)
     if issue_repo.lower() != target_repo.lower():
@@ -44,16 +39,26 @@ def assert_issue_matches_repo(issue_url: str, repo_url: str) -> None:
             f"Issue repo ({issue_repo}) does not match repo_url ({target_repo}). "
             "Use the same repository for both URLs."
         )
+    assert_repo_allowed(target_repo)
+
+
+def validate_repo_slug(repo: str) -> str:
+    """Validate owner/name slug and allowlist."""
+    repo = repo.strip()
+    if not repo or "/" not in repo:
+        raise ValueError('Repository must be in "owner/name" form')
+    assert_repo_allowed(repo)
+    return repo
 
 
 def get_file_contents(repo_url: str, paths: list[str]) -> list[dict]:
-    """Fetch full file contents for specific paths from the repo default branch."""
     if not paths:
         return []
-    repo = _parse_repo(repo_url)
+    repo, _ = _get_repo(repo_url)
     branch = repo.default_branch
     files: list[dict] = []
-    for path in paths:
+    for raw_path in paths:
+        path = sanitize_repo_path(raw_path)
         try:
             item = repo.get_contents(path, ref=branch)
             if isinstance(item, list):
@@ -70,7 +75,6 @@ def get_file_contents(repo_url: str, paths: list[str]) -> list[dict]:
 
 
 def merge_repo_files(existing: list[dict], extra: list[dict]) -> list[dict]:
-    """Merge file lists by path; extra overwrites existing."""
     by_path = {f["path"]: f for f in existing}
     for f in extra:
         by_path[f["path"]] = f
@@ -78,13 +82,9 @@ def merge_repo_files(existing: list[dict], extra: list[dict]) -> list[dict]:
 
 
 def get_issue(issue_url: str) -> dict:
-    """
-    Fetch GitHub issue details — no LLM needed.
-    Returns title, body, labels, number.
-    """
-    parts = issue_url.rstrip("/").split("/")
-    issue_number = int(parts[-1])
-    repo = _parse_repo("/".join(parts[:-2]))
+    slug, issue_number = parse_github_issue_url(issue_url)
+    assert_repo_allowed(slug)
+    repo = _github.get_repo(slug)
     issue = repo.get_issue(issue_number)
     return {
         "number": issue.number,
@@ -96,12 +96,8 @@ def get_issue(issue_url: str) -> dict:
 
 
 def get_repo_files(repo_url: str, extensions: tuple | None = None) -> list[dict]:
-    """
-    Fetch all source files from repo — deterministic, no LLM.
-    Returns list of {path, content}.
-    """
     extensions = extensions or settings.index_file_extensions
-    repo = _parse_repo(repo_url)
+    repo, _ = _get_repo(repo_url)
     files = []
     contents = repo.get_contents("")
 
@@ -122,27 +118,16 @@ def get_repo_files(repo_url: str, extensions: tuple | None = None) -> list[dict]
 
 
 def get_latest_commit_sha(repo_url: str, branch: str = "main") -> str:
-    """Get the latest commit SHA for a branch — used as cache key."""
-    repo = _parse_repo(repo_url)
+    repo, _ = _get_repo(repo_url)
     return repo.get_branch(branch).commit.sha
 
 
 def get_default_branch(repo_url: str) -> str:
-    """Return the repository's default branch name."""
-    repo = _parse_repo(repo_url)
+    repo, _ = _get_repo(repo_url)
     return repo.default_branch
 
 
 def get_repo_files_cached(repo_url: str, extensions: tuple | None = None) -> list[dict]:
-    """
-    Fetch repo files with Redis caching keyed by repo URL + latest commit SHA.
-
-    Cache hit  → return files instantly, zero GitHub API file calls.
-    Cache miss → fetch from GitHub, store in Redis for 6 hours.
-
-    This means two tasks on the same repo at the same commit share one fetch.
-    Cache is automatically invalidated when a new commit is pushed (SHA changes).
-    """
     default_branch = get_default_branch(repo_url)
     sha = get_latest_commit_sha(repo_url, branch=default_branch)
     extensions = extensions or settings.index_file_extensions
@@ -159,17 +144,17 @@ def get_repo_files_cached(repo_url: str, extensions: tuple | None = None) -> lis
 
 
 def create_pull_request(repo_url: str, branch: str, title: str, body: str, base: str | None = None) -> str:
-    """Create a PR and return its URL."""
-    repo = _parse_repo(repo_url)
+    repo, _ = _get_repo(repo_url)
     pr = repo.create_pull(title=title, body=body, head=branch, base=(base or repo.default_branch))
     return pr.html_url
 
 
-def create_branch_and_commit(repo_url: str, branch: str, file_path: str, content: str, commit_message: str) -> None:
-    """Create a branch and commit a file change."""
-    repo = _parse_repo(repo_url)
+def create_branch_and_commit(
+    repo_url: str, branch: str, file_path: str, content: str, commit_message: str
+) -> None:
+    safe_path = sanitize_repo_path(file_path)
+    repo, _ = _get_repo(repo_url)
     source = repo.get_branch(repo.default_branch)
-    # Create the branch ref if it does not already exist.
     try:
         repo.create_git_ref(ref=f"refs/heads/{branch}", sha=source.commit.sha)
     except GithubException as exc:
@@ -177,7 +162,17 @@ def create_branch_and_commit(repo_url: str, branch: str, file_path: str, content
             raise
 
     try:
-        existing = repo.get_contents(file_path, ref=branch)
-        repo.update_file(file_path, commit_message, content, existing.sha, branch=branch)
+        existing = repo.get_contents(safe_path, ref=branch)
+        repo.update_file(safe_path, commit_message, content, existing.sha, branch=branch)
     except GithubException:
-        repo.create_file(file_path, commit_message, content, branch=branch)
+        repo.create_file(safe_path, commit_message, content, branch=branch)
+
+
+def record_webhook_delivery(delivery_id: str) -> bool:
+    """
+    Return True if this delivery is new; False if duplicate (already processed).
+    """
+    if not delivery_id:
+        return True
+    key = f"webhook:delivery:{delivery_id}"
+    return bool(_cache.set(key, "1", nx=True, ex=86400))
