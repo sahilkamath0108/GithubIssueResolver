@@ -495,7 +495,7 @@ Open [http://localhost:5173](http://localhost:5173). Vite proxies `/api` and `/h
 | `/submit` | Submit a GitHub issue workflow |
 | `/tasks` | List and filter all tasks |
 | `/tasks/:uuid` | Live status, logs, PR link, retry |
-| `/index` | Sync repository into Qdrant |
+| `/repositories` | Sync repo index + manage connected repos |
 | `/settings` | API key and optional base URL (stored in browser) |
 
 If `API_KEY` is set on the backend, enter it in **Settings** so requests include the `X-API-Key` header.

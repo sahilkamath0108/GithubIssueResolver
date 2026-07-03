@@ -1,11 +1,18 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { RefreshCw } from 'lucide-react'
-import { extractErrorMessage, listTasks } from '../api/client'
-import Alert from '../components/Alert'
-import Button from '../components/Button'
-import Card, { CardHeader } from '../components/Card'
-import StatusBadge from '../components/StatusBadge'
+import { extractErrorMessage, listTasks } from '@/api/client'
+import { PageHeader } from '@/components/page-header'
+import { StatusBadge } from '@/components/status-badge'
+import { PipelineCompact } from '@/components/pipeline'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
+import { relativeTime } from '@/lib/format'
+import {
+  buildPipelineSteps,
+  issueTitleFromUrl,
+  parseRepoFromUrl,
+} from '@/lib/task-utils'
 
 const FILTERS = ['all', 'queued', 'running', 'success', 'failed']
 
@@ -38,19 +45,16 @@ export default function TaskList() {
   )
 
   return (
-    <div className="animate-fade-in space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-white md:text-3xl">Tasks</h1>
-          <p className="mt-1 text-[var(--color-muted)]">
-            Monitor all workflow runs and open details for logs and PR links.
-          </p>
-        </div>
-        <Button variant="secondary" onClick={load} loading={loading}>
-          <RefreshCw className="h-4 w-4" />
+    <div className="mx-auto w-full max-w-6xl space-y-6 p-4 lg:p-6">
+      <PageHeader
+        title="Tasks"
+        description="Monitor workflow runs, open details for logs and PR links."
+      >
+        <Button variant="outline" size="sm" onClick={load} disabled={loading}>
+          <RefreshCw className={loading ? 'size-3.5 animate-spin' : 'size-3.5'} />
           Refresh
         </Button>
-      </div>
+      </PageHeader>
 
       <div className="flex flex-wrap gap-2">
         {FILTERS.map((f) => (
@@ -60,8 +64,8 @@ export default function TaskList() {
             onClick={() => setFilter(f)}
             className={`rounded-full px-3.5 py-1.5 text-xs font-medium capitalize transition ${
               filter === f
-                ? 'bg-indigo-600/25 text-indigo-200 ring-1 ring-indigo-500/40'
-                : 'bg-[#181d28] text-slate-400 hover:text-slate-200'
+                ? 'bg-primary/15 text-primary ring-1 ring-primary/30'
+                : 'bg-muted text-muted-foreground hover:text-foreground'
             }`}
           >
             {f}
@@ -69,48 +73,66 @@ export default function TaskList() {
         ))}
       </div>
 
-      {error && <Alert type="error">{error}</Alert>}
+      {error && (
+        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
 
       <Card>
-        {loading && tasks.length === 0 ? (
-          <p className="text-sm text-[var(--color-muted)]">Loading…</p>
-        ) : sorted.length === 0 ? (
-          <p className="py-8 text-center text-[var(--color-muted)]">No tasks found.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[640px] text-left text-sm">
-              <thead>
-                <tr className="border-b border-[var(--color-border)] text-xs uppercase tracking-wider text-[var(--color-muted)]">
-                  <th className="pb-3 pr-4 font-medium">Issue</th>
-                  <th className="pb-3 pr-4 font-medium">Status</th>
-                  <th className="pb-3 pr-4 font-medium">Step</th>
-                  <th className="pb-3 font-medium">Created</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[var(--color-border)]">
-                {sorted.map((task) => (
-                  <tr key={task.uuid} className="group">
-                    <td className="py-3.5 pr-4">
-                      <Link
-                        to={`/tasks/${task.uuid}`}
-                        className="font-medium text-indigo-300 hover:text-indigo-200"
-                      >
-                        {task.issue_url?.replace('https://github.com/', '') || task.uuid}
-                      </Link>
-                    </td>
-                    <td className="py-3.5 pr-4">
-                      <StatusBadge status={task.status} pulse />
-                    </td>
-                    <td className="py-3.5 pr-4 text-slate-400">{task.current_step || '—'}</td>
-                    <td className="py-3.5 text-slate-500">
-                      {new Date(task.created_at).toLocaleString()}
-                    </td>
+        <CardContent className="p-0">
+          {loading && tasks.length === 0 ? (
+            <p className="p-4 text-sm text-muted-foreground">Loading…</p>
+          ) : sorted.length === 0 ? (
+            <p className="p-8 text-center text-sm text-muted-foreground">No tasks found.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[720px] text-left text-sm">
+                <thead>
+                  <tr className="border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
+                    <th className="px-4 pb-3 font-medium">Issue</th>
+                    <th className="px-4 pb-3 font-medium">Pipeline</th>
+                    <th className="px-4 pb-3 font-medium">Status</th>
+                    <th className="px-4 pb-3 font-medium">Step</th>
+                    <th className="px-4 pb-3 font-medium">Created</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {sorted.map((task) => {
+                    const steps = buildPipelineSteps(task.current_step, task.status)
+                    return (
+                      <tr key={task.uuid} className="hover:bg-muted/30">
+                        <td className="px-4 py-3.5">
+                          <Link
+                            to={`/tasks/${task.uuid}`}
+                            className="font-medium text-primary hover:underline"
+                          >
+                            {issueTitleFromUrl(task.issue_url)}
+                          </Link>
+                          <p className="mt-0.5 font-mono text-xs text-muted-foreground">
+                            {parseRepoFromUrl(task.issue_url)}
+                          </p>
+                        </td>
+                        <td className="px-4 py-3.5">
+                          <PipelineCompact steps={steps} />
+                        </td>
+                        <td className="px-4 py-3.5">
+                          <StatusBadge status={task.status} />
+                        </td>
+                        <td className="px-4 py-3.5 text-muted-foreground">
+                          {task.current_step || '—'}
+                        </td>
+                        <td className="px-4 py-3.5 text-muted-foreground">
+                          {relativeTime(task.created_at)}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
       </Card>
     </div>
   )

@@ -6,11 +6,11 @@ import {
   parseIssueRepo,
   repoToUrl,
   submitWorkflow,
-} from '../api/client'
-import Alert from '../components/Alert'
-import Button from '../components/Button'
-import Card, { CardHeader } from '../components/Card'
-import Input from '../components/Input'
+} from '@/api/client'
+import { PageHeader } from '@/components/page-header'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input, Label } from '@/components/ui/input'
 
 export default function SubmitWorkflow() {
   const navigate = useNavigate()
@@ -40,49 +40,61 @@ export default function SubmitWorkflow() {
   }
 
   return (
-    <div className="animate-fade-in mx-auto max-w-2xl space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-white md:text-3xl">Resolve an issue</h1>
-        <p className="mt-2 text-[var(--color-muted)]">
-          Submit a GitHub issue and queue the multi-agent workflow. The issue and repository
-          must belong to the same repo.
-        </p>
-      </div>
+    <div className="mx-auto w-full max-w-2xl space-y-6 p-4 lg:p-6">
+      <PageHeader
+        title="Submit issue"
+        description="Queue a multi-agent workflow. The issue and repository must belong to the same repo."
+      />
 
-      <Card glow>
-        <CardHeader
-          title="Issue details"
-          subtitle="We'll fetch the issue, index the repo if needed, and start the agent pipeline"
-        />
+      <Card>
+        <CardHeader>
+          <CardTitle>Issue details</CardTitle>
+          <CardDescription>
+            Agents will plan, search your indexed codebase, write patches, test, and open a PR.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleSubmit} className="space-y-5">
+            {error && (
+              <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {error}
+              </div>
+            )}
 
-        <form onSubmit={handleSubmit} className="space-y-5">
-          {error && <Alert type="error">{error}</Alert>}
+            <div className="space-y-2">
+              <Label htmlFor="issue-url">GitHub issue URL</Label>
+              <Input
+                id="issue-url"
+                placeholder="https://github.com/owner/repo/issues/42"
+                value={issueUrl}
+                onChange={(e) => handleIssueChange(e.target.value)}
+                required
+              />
+            </div>
 
-          <Input
-            label="GitHub issue URL"
-            placeholder="https://github.com/owner/repo/issues/42"
-            value={issueUrl}
-            onChange={(e) => handleIssueChange(e.target.value)}
-            required
-            hint="Full URL to the GitHub issue"
-          />
+            <div className="space-y-2">
+              <Label htmlFor="repo-url">Repository URL</Label>
+              <Input
+                id="repo-url"
+                placeholder="https://github.com/owner/repo"
+                value={repoUrl}
+                onChange={(e) => setRepoUrl(e.target.value)}
+                required
+              />
+            </div>
 
-          <Input
-            label="Repository URL"
-            placeholder="https://github.com/owner/repo"
-            value={repoUrl}
-            onChange={(e) => setRepoUrl(e.target.value)}
-            required
-            hint="Must match the repository that owns the issue"
-          />
-
-          <div className="flex flex-wrap gap-3 pt-2">
-            <Button type="submit" loading={loading} disabled={!issueUrl || !repoUrl}>
-              <Rocket className="h-4 w-4" />
-              Start workflow
+            <Button type="submit" disabled={loading || !issueUrl || !repoUrl}>
+              {loading ? (
+                <>Starting…</>
+              ) : (
+                <>
+                  <Rocket className="size-4" />
+                  Start workflow
+                </>
+              )}
             </Button>
-          </div>
-        </form>
+          </form>
+        </CardContent>
       </Card>
     </div>
   )

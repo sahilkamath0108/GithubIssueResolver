@@ -11,19 +11,29 @@ import {
   extractErrorMessage,
   getTaskLogs,
   getTaskStatus,
+  listTasks,
   retryTask,
-} from '../api/client'
-import Alert from '../components/Alert'
-import Button from '../components/Button'
-import Card, { CardHeader } from '../components/Card'
-import LogViewer from '../components/LogViewer'
-import StatusBadge from '../components/StatusBadge'
+} from '@/api/client'
+import { PageHeader } from '@/components/page-header'
+import { Pipeline } from '@/components/pipeline'
+import { StatusBadge } from '@/components/status-badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Progress } from '@/components/ui/input'
+import { formatTime } from '@/lib/format'
+import {
+  buildPipelineSteps,
+  computeProgress,
+  issueTitleFromUrl,
+  parseRepoFromUrl,
+} from '@/lib/task-utils'
 
-const ACTIVE = new Set(['queued', 'pending', 'running'])
+const ACTIVE = new Set(['queued', 'running'])
 
 export default function TaskDetail() {
   const { taskUuid } = useParams()
   const [status, setStatus] = useState(null)
+  const [issueUrl, setIssueUrl] = useState('')
   const [logs, setLogs] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -31,12 +41,15 @@ export default function TaskDetail() {
 
   const refresh = useCallback(async () => {
     try {
-      const [statusData, logsData] = await Promise.all([
+      const [statusData, logsData, tasksData] = await Promise.all([
         getTaskStatus(taskUuid),
         getTaskLogs(taskUuid),
+        listTasks(),
       ])
+      const match = tasksData.find((t) => t.uuid === taskUuid)
+      if (match?.issue_url) setIssueUrl(match.issue_url)
       setStatus(statusData)
-      setLogs(logsData)
+      setLogs(Array.isArray(logsData) ? logsData : [])
       setError('')
     } catch (err) {
       setError(extractErrorMessage(err))
@@ -69,93 +82,154 @@ export default function TaskDetail() {
     }
   }
 
+  const steps = status
+    ? buildPipelineSteps(status.current_step, status.status)
+    : []
+  const progress = computeProgress(steps)
+
   if (loading && !status) {
-    return <p className="text-[var(--color-muted)]">Loading task…</p>
+    return (
+      <div className="mx-auto max-w-6xl p-6 text-muted-foreground">Loading task…</div>
+    )
   }
 
   return (
-    <div className="animate-fade-in space-y-6">
-      <div className="flex flex-wrap items-center gap-4">
-        <Link
-          to="/tasks"
-          className="inline-flex items-center gap-1.5 text-sm text-slate-400 hover:text-white"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Back to tasks
-        </Link>
-      </div>
+    <div className="mx-auto w-full max-w-6xl space-y-6 p-4 lg:p-6">
+      <Link
+        to="/tasks"
+        className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+      >
+        <ArrowLeft className="size-4" />
+        Back to tasks
+      </Link>
 
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-white">Task details</h1>
-          <p className="mt-1 font-mono text-xs text-slate-500">{taskUuid}</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" onClick={refresh}>
-            <RefreshCw className="h-4 w-4" />
-            Refresh
+      <PageHeader
+        title={issueUrl ? issueTitleFromUrl(issueUrl) : 'Task details'}
+        description={
+          issueUrl
+            ? `${parseRepoFromUrl(issueUrl)} · ${taskUuid}`
+            : taskUuid
+        }
+      >
+        <Button variant="outline" size="sm" onClick={refresh}>
+          <RefreshCw className="size-3.5" />
+          Refresh
+        </Button>
+        {status?.status === 'failed' && (
+          <Button size="sm" onClick={handleRetry} disabled={retrying}>
+            <RotateCcw className="size-3.5" />
+            {retrying ? 'Retrying…' : 'Retry'}
           </Button>
-          {status?.status === 'failed' && (
-            <Button onClick={handleRetry} loading={retrying}>
-              <RotateCcw className="h-4 w-4" />
-              Retry
-            </Button>
-          )}
-        </div>
-      </div>
+        )}
+      </PageHeader>
 
-      {error && <Alert type="error">{error}</Alert>}
+      {error && (
+        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
 
       {status && (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-          {[
-            ['Status', <StatusBadge key="s" status={status.status} pulse />],
-            ['Current step', status.current_step || '—'],
-            ['Retries', status.retry_count],
-            ['Task ID', status.task_id],
-          ].map(([label, value]) => (
-            <div
-              key={label}
-              className="rounded-xl border border-[var(--color-border)] bg-[#12161f]/80 p-4"
-            >
-              <p className="text-xs text-[var(--color-muted)]">{label}</p>
-              <div className="mt-1 text-sm font-medium text-white">{value}</div>
-            </div>
-          ))}
-        </div>
-      )}
+        <>
+          <div className="grid gap-4 md:grid-cols-4">
+            <Card className="p-4">
+              <p className="text-xs text-muted-foreground">Status</p>
+              <div className="mt-2">
+                <StatusBadge status={status.status} />
+              </div>
+            </Card>
+            <Card className="p-4">
+              <p className="text-xs text-muted-foreground">Current step</p>
+              <p className="mt-2 text-sm font-medium">{status.current_step || '—'}</p>
+            </Card>
+            <Card className="p-4">
+              <p className="text-xs text-muted-foreground">Retries</p>
+              <p className="mt-2 text-sm font-medium tabular-nums">{status.retry_count}</p>
+            </Card>
+            <Card className="p-4">
+              <p className="text-xs text-muted-foreground">Progress</p>
+              <p className="mt-2 text-sm font-medium tabular-nums">{progress}%</p>
+            </Card>
+          </div>
 
-      {status?.result_pr_url && (
-        <Alert type="success" title="Pull request created">
-          <a
-            href={status.result_pr_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 font-medium underline underline-offset-2"
-          >
-            <GitPullRequest className="h-4 w-4" />
-            {status.result_pr_url}
-            <ExternalLink className="h-3.5 w-3.5" />
-          </a>
-        </Alert>
-      )}
+          <Card>
+            <CardHeader>
+              <CardTitle>Agent pipeline</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Progress value={progress} />
+              <Pipeline steps={steps} />
+            </CardContent>
+          </Card>
 
-      {status?.error && (
-        <Alert type="error" title="Workflow error">
-          {status.error}
-        </Alert>
+          {status.result_pr_url && (
+            <Card className="border-success/20 bg-success/5">
+              <CardContent className="flex items-center gap-3 py-4">
+                <GitPullRequest className="size-5 text-success" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium">Pull request created</p>
+                  <a
+                    href={status.result_pr_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-0.5 inline-flex items-center gap-1 text-sm text-primary hover:underline"
+                  >
+                    {status.result_pr_url}
+                    <ExternalLink className="size-3.5" />
+                  </a>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {status.error && (
+            <Card className="border-destructive/30 bg-destructive/5">
+              <CardContent className="py-4">
+                <p className="text-sm font-medium text-destructive">Workflow error</p>
+                <p className="mt-1 text-sm text-destructive/90">{status.error}</p>
+              </CardContent>
+            </Card>
+          )}
+        </>
       )}
 
       <Card>
-        <CardHeader
-          title="Execution logs"
-          subtitle={
-            status && ACTIVE.has(status.status)
-              ? 'Auto-refreshing every 4 seconds'
-              : 'Step-by-step agent output'
-          }
-        />
-        <LogViewer logs={logs} />
+        <CardHeader>
+          <CardTitle>Execution logs</CardTitle>
+          {status && ACTIVE.has(status.status) && (
+            <p className="text-xs text-muted-foreground">Auto-refreshing every 4 seconds</p>
+          )}
+        </CardHeader>
+        <CardContent>
+          {logs.length === 0 ? (
+            <p className="py-4 text-center text-sm text-muted-foreground">
+              No logs yet — workflow may still be starting.
+            </p>
+          ) : (
+            <ul className="max-h-[480px] space-y-2 overflow-y-auto">
+              {logs.map((log, i) => (
+                <li
+                  key={`${log.created_at}-${i}`}
+                  className="rounded-lg border border-border bg-muted/20 px-3 py-2.5"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                    <span className="uppercase tracking-wide">{log.level}</span>
+                    <span>{formatTime(log.created_at)}</span>
+                  </div>
+                  <p className="mt-1 text-sm whitespace-pre-wrap">{log.message}</p>
+                  {log.metadata && Object.keys(log.metadata).length > 0 && (
+                    <details className="mt-2">
+                      <summary className="cursor-pointer text-xs text-primary">Metadata</summary>
+                      <pre className="mt-2 max-h-48 overflow-auto rounded bg-background p-2 text-xs text-muted-foreground">
+                        {JSON.stringify(log.metadata, null, 2)}
+                      </pre>
+                    </details>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
       </Card>
     </div>
   )
