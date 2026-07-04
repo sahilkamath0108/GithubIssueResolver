@@ -4,7 +4,8 @@ from app.domain.agents.code_writer import CodeWriterAgent
 from app.domain.agents.fix_agent import FixAgent
 from app.services import github_service
 from app.services import qdrant_search_service
-from app.services.code_context_service import build_context, assign_target_files
+from app.services.code_context_service import build_context, assign_target_files, expand_write_allowlist
+from app.domain.agents.write_guard import ExtraFilesRequestedError
 from app.core.code_safety import scan_generated_code
 from app.domain.agents.minimal_patch import filter_substantive_file_changes
 from app.indexing.indexer import RepoIndexer
@@ -109,8 +110,8 @@ def node_read_code(state: dict) -> dict:
                 if existing_vectors == 0:
                     raise RuntimeError(
                         f"Repo index sync failed and Qdrant has no vectors for {repo_name}. "
-                        f"Ensure Ollama is running with `{settings.OLLAMA_EMBEDDING_MODEL}` "
-                        f"(`ollama pull {settings.OLLAMA_EMBEDDING_MODEL}`). "
+                        f"Ensure embedding API is configured ({settings.EMBEDDING_PROVIDER}: "
+                        f"`{settings.embedding_model_id}`). "
                         f"Original error: {sync_exc}"
                     ) from sync_exc
                 log_repo.create(
@@ -171,7 +172,7 @@ def node_read_code(state: dict) -> dict:
         if not ws.relevant_chunks:
             raise RuntimeError(
                 f"No code context for {repo_name}. "
-                "Ensure the repo is indexed in Qdrant and Ollama embeddings are reachable, "
+                "Ensure the repo is indexed in Qdrant and the embedding API is reachable, "
                 f"or that GitHub returned files (got {len(files)} files)."
             )
 
@@ -196,6 +197,28 @@ def node_read_code(state: dict) -> dict:
     return ws.model_dump()
 
 
+def _run_code_writer_with_expand(ws: WorkflowStateSchema, log_repo: LogRepository) -> WorkflowStateSchema:
+    """Run code writer; on extra-file rejection, expand allowlist once and retry."""
+    try:
+        return _code_writer.run(ws)
+    except ExtraFilesRequestedError as exc:
+        log_repo.info(
+            ws.task_id,
+            "Expanding files_to_modify with LLM-requested paths",
+            {"extra": exc.extra_paths, "previously_allowed": exc.allowed},
+        )
+        plan, repo_files, planned = expand_write_allowlist(
+            ws.plan or {},
+            ws.repo_files or [],
+            exc.extra_paths,
+            repo_url=ws.repo_url,
+        )
+        ws.plan = plan
+        ws.repo_files = repo_files
+        ws.relevant_chunks = build_context(planned, [], repo_files)
+        return _code_writer.run(ws)
+
+
 def node_write_code(state: dict) -> dict:
     """LLM node — generate code using plan + relevant chunks only."""
     ws = WorkflowStateSchema(**state)
@@ -205,7 +228,7 @@ def node_write_code(state: dict) -> dict:
         log_repo.info(ws.task_id, "Node started: write_code")
         db.commit()
 
-        ws = _code_writer.run(ws)
+        ws = _run_code_writer_with_expand(ws, log_repo)
         scan_generated_code(ws.generated_code or {})
 
         last_llm = get_last_llm_raw()
@@ -267,6 +290,31 @@ def node_execute(state: dict) -> dict:
     return ws.model_dump()
 
 
+def _run_fix_with_expand(ws: WorkflowStateSchema, log_repo: LogRepository) -> WorkflowStateSchema:
+    try:
+        return _fix_agent.run(ws)
+    except ExtraFilesRequestedError as exc:
+        log_repo.info(
+            ws.task_id,
+            "Expanding fix allowlist with LLM-requested paths",
+            {"extra": exc.extra_paths, "previously_allowed": exc.allowed},
+        )
+        plan, repo_files, _planned = expand_write_allowlist(
+            ws.plan or {},
+            ws.repo_files or [],
+            exc.extra_paths,
+            repo_url=ws.repo_url,
+        )
+        ws.plan = plan
+        ws.repo_files = repo_files
+        gen = dict(ws.generated_code or {})
+        for f in repo_files:
+            if f["path"] in exc.extra_paths and f["path"] not in gen:
+                gen[f["path"]] = f["content"]
+        ws.generated_code = gen
+        return _fix_agent.run(ws)
+
+
 def node_fix(state: dict) -> dict:
     """LLM node — fix code based on precise error, limited retries."""
     ws = WorkflowStateSchema(**state)
@@ -276,7 +324,7 @@ def node_fix(state: dict) -> dict:
         log_repo.info(ws.task_id, "Node started: fix", {"retry": ws.retry_count + 1, "error_type": ws.error_type})
         db.commit()
 
-        ws = _fix_agent.run(ws)
+        ws = _run_fix_with_expand(ws, log_repo)
         scan_generated_code(ws.generated_code or {})
 
         last_llm = get_last_llm_raw()

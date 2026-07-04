@@ -1,4 +1,4 @@
-"""GitHub API → chunk → Ollama embeddings → Qdrant indexing."""
+"""GitHub API → chunk → Gemini embeddings → Qdrant indexing."""
 
 from app.indexing.indexer import RepoIndexer
 from app.indexing.schemas import IndexRunResult, TextChunk, TreeBlobFile

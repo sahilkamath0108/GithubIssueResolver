@@ -3,6 +3,7 @@ from app.domain.state.workflow_state import WorkflowStateSchema
 from app.domain.agents.patch_parse import parse_changes_to_files
 from app.domain.agents.minimal_patch import filter_substantive_file_changes
 from app.domain.agents.prompt_guard import PROMPT_INJECTION_SYSTEM_GUARDRAIL
+from app.domain.agents.write_guard import ExtraFilesRequestedError
 from app.services.llm_service import call_llm_json_messages
 
 _CODE_SYSTEM = (
@@ -14,7 +15,7 @@ You are an AI coding assistant implementing changes in a real repository.
 Your job: produce updated file contents for each file that must change, matching the plan and the existing project.
 
 Rules:
-- Modify ONLY files listed in files_to_modify.
+- Modify ONLY files listed in files_to_modify (additional paths you include in changes may be auto-approved once).
 - Make the SMALLEST change that fixes the issue — do not rewrite unrelated code.
 - Preserve existing formatting: indentation, blank lines, line endings, and file structure unless the fix requires changing them.
 - Do NOT reformat, reflow, or "clean up" files. Do NOT remove trailing newlines or extra blank lines.
@@ -76,10 +77,7 @@ class CodeWriterAgent:
         if allowed:
             extra = [p for p in normalized.keys() if p not in allowed]
             if extra:
-                raise ValueError(
-                    f"LLM attempted to modify files not in plan.files_to_modify: {extra}. "
-                    f"Allowed: {sorted(allowed)}"
-                )
+                raise ExtraFilesRequestedError(extra, sorted(allowed))
 
         state.generated_code = filter_substantive_file_changes(
             normalized,

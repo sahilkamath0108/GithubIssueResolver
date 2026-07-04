@@ -39,10 +39,26 @@ class Settings(BaseSettings):
     QDRANT_API_KEY: str = ""
     QDRANT_EMBEDDING_DIM: int | None = None
 
-    # Ollama embeddings
-    OLLAMA_BASE_URL: str = "http://localhost:11434"
-    OLLAMA_EMBEDDING_MODEL: str = "embeddinggemma:300m"
-    OLLAMA_EMBED_MAX_CHARS: int = 6000  # embeddinggemma context ~2K tokens
+    # Embeddings (indexing + Qdrant search) — provider: jina | gemini
+    EMBEDDING_PROVIDER: str = "jina"
+
+    # Jina (https://jina.ai/api-dashboard/embedding)
+    JINA_API_KEY: str = ""
+    JINA_API_BASE_URL: str = "https://api.jina.ai/v1"
+    JINA_EMBEDDING_MODEL: str = "jina-embeddings-v5-text-small"
+    JINA_QUERY_TASK: str = "retrieval.query"
+    JINA_DOCUMENT_TASK: str = "retrieval.passage"
+    JINA_EMBED_NORMALIZED: bool = True
+    JINA_EMBED_OUTPUT_DIMENSION: int | None = 1024  # v5-text-small native dim
+    JINA_EMBED_MAX_CHARS: int = 12000
+    JINA_EMBED_BATCH_SIZE: int = 16
+
+    # Gemini (optional provider)
+    GEMINI_API_KEY: str = ""
+    GEMINI_API_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta"
+    GEMINI_EMBEDDING_MODEL: str = "gemini-embedding-2"
+    GEMINI_EMBED_OUTPUT_DIMENSION: int = 768
+    GEMINI_EMBED_MAX_CHARS: int = 12000
 
     # GitHub indexing / resilience
     GITHUB_API_MAX_RETRIES: int = 5
@@ -111,6 +127,24 @@ class Settings(BaseSettings):
     @property
     def repo_allowlist(self) -> frozenset[str]:
         return frozenset(p.lower() for p in self.repo_allowlist_raw)
+
+    @property
+    def embedding_model_id(self) -> str:
+        if self.EMBEDDING_PROVIDER.strip().lower() == "jina":
+            return self.JINA_EMBEDDING_MODEL
+        return self.GEMINI_EMBEDDING_MODEL
+
+    @property
+    def provider_embedding_dim(self) -> int | None:
+        """Output dimension configured for the active embedding provider."""
+        if self.EMBEDDING_PROVIDER.strip().lower() == "jina":
+            return self.JINA_EMBED_OUTPUT_DIMENSION
+        return self.GEMINI_EMBED_OUTPUT_DIMENSION
+
+    @property
+    def effective_embedding_dim(self) -> int | None:
+        """Provider output dim, else explicit Qdrant dim, else inferred on first embed."""
+        return self.provider_embedding_dim or self.QDRANT_EMBEDDING_DIM
 
     @property
     def oauth_enabled(self) -> bool:

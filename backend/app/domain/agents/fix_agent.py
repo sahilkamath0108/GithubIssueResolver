@@ -3,6 +3,7 @@ from app.domain.state.workflow_state import WorkflowStateSchema
 from app.domain.agents.minimal_patch import filter_substantive_file_changes
 from app.domain.agents.patch_parse import parse_changes_to_files
 from app.domain.agents.prompt_guard import PROMPT_INJECTION_SYSTEM_GUARDRAIL, sanitize_issue_text
+from app.domain.agents.write_guard import ExtraFilesRequestedError
 from app.services.llm_service import call_llm_json_messages
 
 _FIX_SYSTEM = (
@@ -91,10 +92,7 @@ class FixAgent:
         if allowed:
             extra = [p for p in normalized.keys() if p not in allowed]
             if extra:
-                raise ValueError(
-                    f"LLM attempted to modify files outside allowed set: {extra}. "
-                    f"Allowed: {sorted(allowed)}"
-                )
+                raise ExtraFilesRequestedError(extra, sorted(allowed))
 
         baseline = dict(state.generated_code or {})
         state.generated_code = filter_substantive_file_changes(normalized, baseline)

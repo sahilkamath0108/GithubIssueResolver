@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.settings import Settings, settings as default_settings
 from app.indexing.chunker import CodeChunker
 from app.indexing.github_client import GitHubRepoClient
-from app.indexing.ollama_embeddings import OllamaEmbeddingClient
+from app.indexing.embedding_client import EmbeddingClient, create_embedding_client
 from app.indexing.qdrant_store import QdrantVectorStore
 from app.indexing.schemas import IndexRunResult, TreeBlobFile
 from app.models.repo_index_state import RepoIndexState
@@ -23,7 +23,7 @@ def _fetch_blob_text(repo: str, blob_sha: str, settings: Settings, access_token:
 
 class RepoIndexer:
     """
-    GitHub API → chunk → Ollama → Qdrant indexing.
+    GitHub API → chunk → cloud embeddings → Qdrant indexing.
 
     **Single entrypoint for callers (issues, jobs, API):** :meth:`sync_repo` compares the
     default-branch **tip commit** from GitHub with the commit stored in ``repo_index_state``
@@ -41,14 +41,14 @@ class RepoIndexer:
         settings: Settings | None = None,
         github: GitHubRepoClient | None = None,
         chunker: CodeChunker | None = None,
-        embedder: OllamaEmbeddingClient | None = None,
+        embedder: EmbeddingClient | None = None,
         vector_store: QdrantVectorStore | None = None,
     ):
         self._db = db
         self._settings = settings or default_settings
         self._github = github or GitHubRepoClient(self._settings)
         self._chunker = chunker or CodeChunker(self._settings)
-        self._embedder = embedder or OllamaEmbeddingClient(self._settings)
+        self._embedder = embedder or create_embedding_client(self._settings)
         self._qdrant = vector_store or QdrantVectorStore(self._settings)
 
     def close(self) -> None:
@@ -67,13 +67,28 @@ class RepoIndexer:
 
     def _persist_state(self, repo_full_name: str, commit_sha: str) -> None:
         row = self._load_state(repo_full_name)
+        model = self._settings.embedding_model_id
         if row is None:
-            row = RepoIndexState(repo_full_name=repo_full_name, commit_sha=commit_sha)
+            row = RepoIndexState(
+                repo_full_name=repo_full_name,
+                commit_sha=commit_sha,
+                embedding_model=model,
+            )
             self._db.add(row)
         else:
             row.commit_sha = commit_sha
+            row.embedding_model = model
         self._db.commit()
         logger.info("Updated repo index state", extra={"repo": repo_full_name, "commit": commit_sha})
+
+    def _needs_reindex_for_embedding_model(self, state: RepoIndexState | None) -> bool:
+        if state is None:
+            return False
+        current = self._settings.embedding_model_id.strip()
+        stored = (state.embedding_model or "").strip()
+        if not stored:
+            return True
+        return stored != current
 
     def sync_repo(self, repo: str, *, force_full: bool = False) -> IndexRunResult:
         """
@@ -99,11 +114,29 @@ class RepoIndexer:
             logger.info("Force full reindex requested", extra={"repo": repo})
             return self._execute_full_index(repo, latest_sha, latest_tree_sha)
 
+        if state is not None and self._needs_reindex_for_embedding_model(state):
+            logger.info(
+                "Embedding model changed; running full reindex",
+                extra={
+                    "repo": repo,
+                    "stored_model": state.embedding_model,
+                    "current_model": self._settings.embedding_model_id,
+                },
+            )
+            return self._execute_full_index(repo, latest_sha, latest_tree_sha)
+
         if state is None:
             logger.info("No index state; running first-time full index", extra={"repo": repo})
             return self._execute_full_index(repo, latest_sha, latest_tree_sha)
 
         if state.commit_sha == latest_sha:
+            vec_count = self._qdrant.count_repo_points(repo)
+            if vec_count == 0:
+                logger.warning(
+                    "Indexed commit matches GitHub tip but Qdrant has no vectors; full reindex",
+                    extra={"repo": repo, "commit": latest_sha},
+                )
+                return self._execute_full_index(repo, latest_sha, latest_tree_sha)
             logger.info("Indexed commit matches GitHub tip; skipping", extra={"repo": repo, "commit": latest_sha})
             return IndexRunResult(
                 repo=repo,
@@ -251,15 +284,36 @@ class RepoIndexer:
             return 0
 
         tuples: list[tuple[str, list[float], str]] = []
-        for chunk in chunks:
+        if self._settings.EMBEDDING_PROVIDER.strip().lower() == "jina" and len(chunks) > 1:
+            payloads = [f"{path}\n{chunk.text}" for chunk in chunks]
             try:
-                vec = self._embedder.embed_text(chunk.text)
-                tuples.append((chunk.chunk_id, vec, chunk.text))
+                vectors = self._embedder.embed_batch(payloads)
+                tuples = [
+                    (chunk.chunk_id, vec, chunk.text)
+                    for chunk, vec in zip(chunks, vectors, strict=True)
+                ]
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "Skipping chunk after embedding failure",
-                    extra={"repo": repo, "path": path, "chunk_id": chunk.chunk_id, "error": str(exc)},
+                    "Batch embedding failed for %s (%s chunks); falling back to per-chunk: %s",
+                    path,
+                    len(chunks),
+                    exc,
                 )
+                tuples = []
+
+        if not tuples:
+            for chunk in chunks:
+                try:
+                    vec = self._embedder.embed_document(chunk.text, title=path)
+                    tuples.append((chunk.chunk_id, vec, chunk.text))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Skipping chunk after embedding failure (repo=%s path=%s chunk=%s): %s",
+                        repo,
+                        path,
+                        chunk.chunk_id,
+                        exc,
+                    )
 
         if not tuples:
             return 0

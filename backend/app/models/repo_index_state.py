@@ -15,5 +15,6 @@ class RepoIndexState(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     repo_full_name = Column(VARCHAR(255), nullable=False, index=True)
     commit_sha = Column(VARCHAR(64), nullable=False)
+    embedding_model = Column(VARCHAR(128), nullable=True)
     created_at = Column(TIMESTAMP, nullable=False, server_default=func.now())
     updated_at = Column(TIMESTAMP, nullable=False, server_default=func.now(), onupdate=func.now())

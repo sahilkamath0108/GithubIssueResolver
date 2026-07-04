@@ -31,7 +31,7 @@ class QdrantVectorStore:
             timeout=self._settings.QDRANT_TIMEOUT,
         )
         self._collection = self._settings.QDRANT_COLLECTION
-        self._vector_size: int | None = self._settings.QDRANT_EMBEDDING_DIM
+        self._vector_size: int | None = self._settings.effective_embedding_dim
         self._ensured = False
 
     def close(self) -> None:
@@ -109,8 +109,56 @@ class QdrantVectorStore:
                 f"Qdrant collection {self._collection!r} uses vector size {existing_dim}, "
                 f"but current embeddings have size {vector_size}."
             )
+        else:
+            self.ensure_payload_indexes()
         self._vector_size = vector_size
         self._ensured = True
+
+    def search_repo_chunks(
+        self,
+        repo_full_name: str,
+        vector: list[float],
+        *,
+        top_k: int,
+    ) -> list[dict]:
+        """Vector search filtered by repo; returns {path, chunk} dicts."""
+        self.ensure_payload_indexes()
+        try:
+            response = self._client.query_points(
+                collection_name=self._collection,
+                query=vector,
+                limit=top_k,
+                query_filter=Filter(
+                    must=[FieldCondition(key="repo", match=MatchValue(value=repo_full_name))]
+                ),
+                with_payload=True,
+            )
+        except UnexpectedResponse as exc:
+            if getattr(exc, "status_code", None) == 400:
+                raise RuntimeError(
+                    "Qdrant rejected filtered search (400). Payload indexes for `repo` and `path` "
+                    f"could not be used on collection {self._collection!r}. "
+                    "Re-index the repo or recreate the collection."
+                ) from exc
+            self._raise_qdrant_hint(exc)
+            raise
+
+        out: list[dict] = []
+        for point in response.points:
+            payload = point.payload or {}
+            path = payload.get("path")
+            text = payload.get("text")
+            if isinstance(path, str) and isinstance(text, str):
+                out.append({"path": path, "chunk": text})
+
+        logger.info(
+            "Qdrant search repo=%s raw_hits=%s usable_chunks=%s top_k=%s",
+            repo_full_name,
+            len(response.points),
+            len(out),
+            top_k,
+        )
+        return out
 
     def count_repo_points(self, repo_full_name: str) -> int:
         """How many vectors exist for this repo (0 if collection missing)."""

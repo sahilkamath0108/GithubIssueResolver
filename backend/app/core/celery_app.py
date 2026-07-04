@@ -36,6 +36,16 @@ celery_app.conf.task_routes = {
 
 @celery_app.on_after_configure.connect
 def _ensure_db_partitions(**_kwargs):
-    from app.db.init_db import init
+    import logging
 
+    from app.db.init_db import init
+    from app.indexing.qdrant_store import QdrantVectorStore
+
+    logger = logging.getLogger(__name__)
     init()
+    try:
+        store = QdrantVectorStore()
+        store.ensure_payload_indexes()
+        store.close()
+    except Exception as exc:
+        logger.warning("Could not ensure Qdrant payload indexes at worker startup: %s", exc)

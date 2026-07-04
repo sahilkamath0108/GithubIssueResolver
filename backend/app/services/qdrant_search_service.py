@@ -1,20 +1,27 @@
 import logging
 
-from qdrant_client import QdrantClient
-from qdrant_client.http.exceptions import UnexpectedResponse
-from qdrant_client.models import FieldCondition, Filter, MatchValue
-
 from app.core.settings import settings
-from app.indexing.ollama_embeddings import OllamaEmbeddingClient
+from app.indexing.embedding_client import EmbeddingClient, create_embedding_client
+from app.indexing.qdrant_store import QdrantVectorStore
 
 logger = logging.getLogger(__name__)
 
-_qdrant = QdrantClient(
-    url=settings.QDRANT_URL,
-    api_key=(settings.QDRANT_API_KEY or None),
-    timeout=settings.QDRANT_TIMEOUT,
-)
-_embedder = OllamaEmbeddingClient()
+_vector_store: QdrantVectorStore | None = None
+_embedder: EmbeddingClient | None = None
+
+
+def _get_vector_store() -> QdrantVectorStore:
+    global _vector_store
+    if _vector_store is None:
+        _vector_store = QdrantVectorStore()
+    return _vector_store
+
+
+def _get_embedder() -> EmbeddingClient:
+    global _embedder
+    if _embedder is None:
+        _embedder = create_embedding_client()
+    return _embedder
 
 
 def search_relevant_chunks(
@@ -25,39 +32,17 @@ def search_relevant_chunks(
     Returns list of {path, chunk} where chunk is the stored text payload.
     """
     top_k = top_k or settings.CONTEXT_SEARCH_TOP_K
-    vector = _embedder.embed_text(query)
-    try:
-        # qdrant-client v1.16+ removed `.search` in favor of `.query_points`.
-        response = _qdrant.query_points(
-            collection_name=settings.QDRANT_COLLECTION,
-            query=vector,
-            limit=top_k,
-            query_filter=Filter(
-                must=[FieldCondition(key="repo", match=MatchValue(value=repo_full_name))]
-            ),
-            with_payload=True,
-        )
-        results = response.points
-    except UnexpectedResponse as exc:
-        # Managed Qdrant can require payload indexes for filtered search.
-        if getattr(exc, "status_code", None) == 400:
-            raise RuntimeError(
-                "Qdrant rejected filtered search (400). Ensure payload indexes exist for `repo` (keyword). "
-                "Create indexes for `repo` and `path` on your Qdrant collection."
-            ) from exc
-        raise
-
-    out: list[dict] = []
-    for r in results:
-        payload = r.payload or {}
-        path = payload.get("path")
-        text = payload.get("text")
-        if isinstance(path, str) and isinstance(text, str):
-            out.append({"path": path, "chunk": text})
+    vector = _get_embedder().embed_query(query)
+    out = _get_vector_store().search_repo_chunks(
+        repo_full_name,
+        vector,
+        top_k=top_k,
+    )
 
     logger.info(
-        "Qdrant search returned chunks",
-        extra={"repo": repo_full_name, "top_k": top_k, "returned": len(out)},
+        "Qdrant search returned %s chunks for repo=%s query=%r",
+        len(out),
+        repo_full_name,
+        query[:200],
     )
     return out
-

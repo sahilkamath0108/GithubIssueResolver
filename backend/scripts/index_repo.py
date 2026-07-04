@@ -1,5 +1,5 @@
 """
-CLI for repository indexing (GitHub API → Ollama → Qdrant).
+CLI for repository indexing (GitHub API → Gemini → Qdrant).
 
 Uses :meth:`RepoIndexer.sync_repo` so first run is a full index, later runs are incremental
 unless you pass ``--force-full``.

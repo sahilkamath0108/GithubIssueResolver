@@ -41,6 +41,18 @@ def ensure_schema_compat(conn):
         END
         $$;
     """))
+    conn.execute(text("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'repo_index_state' AND column_name = 'embedding_model'
+            ) THEN
+                ALTER TABLE repo_index_state ADD COLUMN embedding_model VARCHAR(128) NULL;
+            END IF;
+        END
+        $$;
+    """))
 
 
 def init():

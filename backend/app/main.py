@@ -10,6 +10,7 @@ from app.core.csrf import CSRFMiddleware
 from app.core.security import validate_production_settings
 from app.core.settings import settings
 from app.db.init_db import init
+from app.indexing.qdrant_store import QdrantVectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,26 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init()
+    try:
+        store = QdrantVectorStore()
+        store.ensure_payload_indexes()
+        store.close()
+    except Exception as exc:
+        logger.warning("Could not ensure Qdrant payload indexes at startup: %s", exc)
+    provider_dim = settings.provider_embedding_dim
+    if (
+        provider_dim
+        and settings.QDRANT_EMBEDDING_DIM
+        and provider_dim != settings.QDRANT_EMBEDDING_DIM
+    ):
+        logger.warning(
+            "QDRANT_EMBEDDING_DIM=%s conflicts with %s output dim %s; "
+            "using provider dim. Update .env: QDRANT_EMBEDDING_DIM=%s",
+            settings.QDRANT_EMBEDDING_DIM,
+            settings.EMBEDDING_PROVIDER,
+            provider_dim,
+            provider_dim,
+        )
     for msg in validate_production_settings():
         if settings.is_production:
             logger.error("Production configuration issue: %s", msg)

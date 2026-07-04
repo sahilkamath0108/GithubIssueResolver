@@ -78,12 +78,61 @@ def assign_target_files(
     if not targets:
         raise ValueError(
             "No target files found from Qdrant search. "
-            "Ensure the repo is indexed and search_query matches indexed code."
+            "The repo may not be indexed for this embedding model — run a full re-index "
+            f"(Indexing → Sync with force_full, or POST /api/v1/indexing/sync with force_full=true). "
+            f"Vector hits received: {len(vector_chunks)}."
         )
 
     plan["files_to_modify"] = targets[:max_files]
     plan["_files_from_vector_search"] = True
     return plan
+
+
+def expand_write_allowlist(
+    plan: dict,
+    repo_files: list[dict],
+    extra_paths: list[str],
+    *,
+    repo_url: str,
+    max_total_files: int = 12,
+) -> tuple[dict, list[dict], list[str]]:
+    """
+    Merge LLM-requested paths into files_to_modify, fetch missing bodies from GitHub,
+    and return updated plan, repo_files, and the expanded target path list.
+    """
+    from app.services import github_service
+
+    allowed = list(plan.get("files_to_modify") or [])
+    seen = set(allowed)
+    added: list[str] = []
+
+    for raw in extra_paths:
+        try:
+            path = sanitize_repo_path(raw)
+        except ValueError:
+            continue
+        if path in seen:
+            continue
+        if len(allowed) >= max_total_files:
+            break
+        seen.add(path)
+        allowed.append(path)
+        added.append(path)
+
+    if not added:
+        raise ValueError("No valid extra paths to expand allowlist.")
+
+    plan = dict(plan)
+    plan["files_to_modify"] = allowed
+    plan["_allowlist_expanded"] = True
+
+    file_map = {f["path"]: f["content"] for f in repo_files}
+    need_fetch = [p for p in added if p not in file_map]
+    if need_fetch:
+        fetched = github_service.get_file_contents(repo_url, need_fetch)
+        repo_files = github_service.merge_repo_files(repo_files, fetched)
+
+    return plan, repo_files, allowed
 
 
 def _resolve_relative_import(current_file: str, level: int, module: str | None) -> List[str]:
