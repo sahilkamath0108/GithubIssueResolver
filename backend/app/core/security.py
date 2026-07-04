@@ -38,7 +38,13 @@ def validate_production_settings() -> list[str]:
             "GITHUB_TOKEN is recommended for webhooks/background jobs when OAuth is enabled"
         )
     if not settings.repo_allowlist:
-        issues.append("REPO_ALLOWLIST should be set when ENVIRONMENT=production")
+        issues.append("REPO_ALLOWLIST must be set when ENVIRONMENT=production")
+    if settings.WORKFLOW_SKIP_TESTS:
+        issues.append("WORKFLOW_SKIP_TESTS must be false when ENVIRONMENT=production")
+    if not settings.SANDBOX_RUNNER_URL:
+        issues.append("SANDBOX_RUNNER_URL must be set when ENVIRONMENT=production")
+    if not settings.SANDBOX_RUNNER_SECRET:
+        issues.append("SANDBOX_RUNNER_SECRET must be set when ENVIRONMENT=production")
     return issues
 
 

@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.routes import api_router
 from app.core.middleware import APIKeyMiddleware
+from app.core.csrf import CSRFMiddleware
 from app.core.security import validate_production_settings
 from app.core.settings import settings
 from app.db.init_db import init
@@ -48,6 +49,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(CSRFMiddleware)
 app.add_middleware(APIKeyMiddleware)
 
 app.include_router(api_router, prefix="/api/v1")

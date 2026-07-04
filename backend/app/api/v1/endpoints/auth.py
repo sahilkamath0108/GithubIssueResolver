@@ -7,6 +7,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db, resolve_auth_context
+from app.core.csrf import CSRF_COOKIE_NAME, new_csrf_token
 from app.core.settings import settings
 from app.repositories.github_user_repo import GitHubUserRepository
 from app.schemas.auth import AuthStatusResponse, GitHubRepoSummary, UserProfile
@@ -109,6 +110,14 @@ async def github_callback(
         samesite="lax",
         max_age=settings.JWT_EXPIRE_MINUTES * 60,
     )
+    response.set_cookie(
+        key=CSRF_COOKIE_NAME,
+        value=new_csrf_token(),
+        httponly=False,
+        secure=settings.AUTH_COOKIE_SECURE,
+        samesite="lax",
+        max_age=settings.JWT_EXPIRE_MINUTES * 60,
+    )
     return response
 
 
@@ -131,6 +140,7 @@ def logout(request: Request, response: Response, db: Session = Depends(get_db)):
         samesite="lax",
         secure=settings.AUTH_COOKIE_SECURE,
     )
+    response.delete_cookie(CSRF_COOKIE_NAME, path="/")
 
     return {
         "message": "Logged out.",

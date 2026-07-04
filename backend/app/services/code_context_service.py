@@ -9,6 +9,7 @@ import posixpath
 from typing import List, Dict, Set
 
 from app.core.settings import settings
+from app.core.security import sanitize_repo_path
 
 
 _CHARS_PER_TOKEN = 4
@@ -66,6 +67,10 @@ def assign_target_files(
     for vc in vector_chunks:
         path = vc.get("path")
         if not isinstance(path, str) or not path or path in seen:
+            continue
+        try:
+            path = sanitize_repo_path(path)
+        except ValueError:
             continue
         seen.add(path)
         targets.append(path)

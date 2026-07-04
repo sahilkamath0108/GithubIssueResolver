@@ -50,6 +50,12 @@ Security rules (always apply):
 def validate_plan_output(plan: dict) -> None:
     if not isinstance(plan.get("changes"), list):
         raise ValueError("Plan must include a changes array.")
+    for idx, change in enumerate(plan.get("changes", [])):
+        if not isinstance(change, str):
+            raise ValueError(f"Plan changes[{idx}] must be a string description.")
+        for pattern in _INJECTION_PATTERNS:
+            if pattern.search(change):
+                raise ValueError(f"Plan changes[{idx}] contains disallowed instruction-like content.")
     search_query = plan.get("search_query")
     if not isinstance(search_query, str) or not search_query.strip():
         raise ValueError("Plan must include a non-empty search_query string.")

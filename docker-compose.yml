@@ -39,8 +39,21 @@ services:
         condition: service_started
       qdrant:
         condition: service_started
+      sandbox:
+        condition: service_started
     env_file:
       - .env
+
+  sandbox:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.sandbox
+    container_name: multiagent_sandbox
+    env_file:
+      - .env
+    # ONLY this service mounts Docker socket — runs syntax validation in ephemeral containers.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
 
   worker:
     build:
@@ -54,11 +67,10 @@ services:
         condition: service_started
       qdrant:
         condition: service_started
+      sandbox:
+        condition: service_started
     env_file:
       - .env
-    # Required for sandbox test containers. Treat as privileged — isolate in production.
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
 
   frontend:
     build:

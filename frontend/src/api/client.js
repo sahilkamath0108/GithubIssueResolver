@@ -16,6 +16,8 @@ api.interceptors.request.use((config) => {
   config.baseURL = resolveBaseUrl()
   const key = useSettingsStore.getState().apiKey?.trim()
   if (key) config.headers['X-API-Key'] = key
+  const csrf = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]
+  if (csrf) config.headers['X-CSRF-Token'] = decodeURIComponent(csrf)
   return config
 })
 

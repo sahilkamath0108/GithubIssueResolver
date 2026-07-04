@@ -75,6 +75,10 @@ class Settings(BaseSettings):
     MAX_CONTEXT_TOKENS: int = 6000
     WORKFLOW_SKIP_TESTS: bool = False
 
+    # Isolated sandbox runner (only service that should mount Docker socket)
+    SANDBOX_RUNNER_URL: str = "http://sandbox:8090"
+    SANDBOX_RUNNER_SECRET: str = ""
+
     # API security
     API_KEY: str = ""
     FRONTEND_ORIGIN: str = ""

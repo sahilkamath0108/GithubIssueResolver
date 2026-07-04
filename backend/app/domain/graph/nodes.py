@@ -5,6 +5,7 @@ from app.domain.agents.fix_agent import FixAgent
 from app.services import github_service
 from app.services import qdrant_search_service
 from app.services.code_context_service import build_context, assign_target_files
+from app.core.code_safety import scan_generated_code
 from app.domain.agents.minimal_patch import filter_substantive_file_changes
 from app.indexing.indexer import RepoIndexer
 from app.core.settings import settings
@@ -205,6 +206,7 @@ def node_write_code(state: dict) -> dict:
         db.commit()
 
         ws = _code_writer.run(ws)
+        scan_generated_code(ws.generated_code or {})
 
         last_llm = get_last_llm_raw()
         previews: dict[str, str] = {}
@@ -232,8 +234,8 @@ def node_write_code(state: dict) -> dict:
 
 
 def node_execute(state: dict) -> dict:
-    """Deterministic node — run tests in Docker, no LLM."""
-    from app.infrastructure.docker.docker_executor import run_tests
+    """Deterministic node — syntax validation via isolated sandbox, no LLM."""
+    from app.infrastructure.sandbox.client import validate_generated_code
     ws = WorkflowStateSchema(**state)
     db, task_repo, log_repo = _get_repos()
     try:
@@ -242,9 +244,12 @@ def node_execute(state: dict) -> dict:
         db.commit()
 
         if settings.WORKFLOW_SKIP_TESTS:
-            output, passed = "SKIPPED (WORKFLOW_SKIP_TESTS=true)", True
+            if settings.is_production:
+                output, passed = "WORKFLOW_SKIP_TESTS is forbidden in production.", False
+            else:
+                output, passed = "SKIPPED (WORKFLOW_SKIP_TESTS=true)", True
         else:
-            output, passed = run_tests(ws.generated_code)
+            output, passed = validate_generated_code(ws.generated_code or {})
         ws.test_output = output
         ws.test_passed = passed
 
@@ -272,6 +277,7 @@ def node_fix(state: dict) -> dict:
         db.commit()
 
         ws = _fix_agent.run(ws)
+        scan_generated_code(ws.generated_code or {})
 
         last_llm = get_last_llm_raw()
         log_repo.info(
@@ -304,6 +310,7 @@ def node_create_pr(state: dict) -> dict:
         files_to_commit = filter_substantive_file_changes(ws.generated_code or {}, originals)
         if not files_to_commit:
             raise RuntimeError("No substantive changes to commit after filtering whitespace-only diffs.")
+        scan_generated_code(files_to_commit)
 
         commit_message = f"fix: resolve issue (task {ws.task_id})"
         github_service.create_branch_with_files(
