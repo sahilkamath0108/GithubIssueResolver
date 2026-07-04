@@ -13,6 +13,7 @@ from app.core.security import (
     parse_github_repo_url,
     sanitize_repo_path,
 )
+from app.services.repo_tree import format_path_list_for_planner, should_skip_tree_path
 
 _github_token_ctx: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "github_token", default=None
@@ -152,6 +153,40 @@ def get_latest_commit_sha(repo_url: str, branch: str = "main") -> str:
 def get_default_branch(repo_url: str) -> str:
     repo, _ = _get_repo(repo_url)
     return repo.default_branch
+
+
+def get_repo_tree_for_planning(repo_url: str) -> str:
+    """
+    Fetch a compact sorted path listing from the repo default branch for the planner.
+    Omits large generated directories (node_modules, dist, etc.).
+    """
+    repo, slug = _get_repo(repo_url)
+    assert_repo_allowed(slug)
+    branch = repo.default_branch
+    tip = repo.get_branch(branch).commit.sha
+    commit = repo.get_git_commit(tip)
+    tree = repo.get_git_tree(commit.tree.sha, recursive=True)
+    paths: list[str] = []
+    for entry in tree.tree:
+        if entry.type != "blob" or not entry.path:
+            continue
+        if should_skip_tree_path(entry.path):
+            continue
+        paths.append(entry.path)
+    paths.sort()
+    max_paths = settings.PLANNER_REPO_TREE_MAX_PATHS
+    truncated = len(paths) > max_paths
+    if truncated:
+        paths = paths[:max_paths]
+    text = format_path_list_for_planner(
+        paths,
+        repo_full_name=slug,
+        branch=branch,
+        max_chars=settings.PLANNER_REPO_TREE_MAX_CHARS,
+    )
+    if truncated:
+        text += f"\n...[truncated at {max_paths} paths]"
+    return text
 
 
 def get_repo_files_cached(repo_url: str, extensions: tuple | None = None) -> list[dict]:

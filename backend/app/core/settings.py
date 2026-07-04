@@ -84,6 +84,8 @@ class Settings(BaseSettings):
     INDEX_UPSERT_BATCH_SIZE: int = 64
 
     CONTEXT_SEARCH_TOP_K: int = 12
+    PLANNER_REPO_TREE_MAX_PATHS: int = 500
+    PLANNER_REPO_TREE_MAX_CHARS: int = 8000
 
     # Agent limits
     MAX_RETRIES: int = 2

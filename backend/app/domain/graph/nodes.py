@@ -57,7 +57,18 @@ def node_plan(state: dict) -> dict:
         db.commit()
 
         issue = github_service.get_issue(ws.issue_url)
-        ws = _planner.run(ws, issue)
+        repo_tree = ""
+        tree_path_count = 0
+        try:
+            repo_tree = github_service.get_repo_tree_for_planning(ws.repo_url)
+            tree_path_count = repo_tree.count("\n")
+        except Exception as tree_exc:
+            log_repo.info(
+                ws.task_id,
+                "Repo tree unavailable for planner; continuing without layout context",
+                {"error": str(tree_exc)},
+            )
+        ws = _planner.run(ws, issue, repo_tree=repo_tree)
 
         last_llm = get_last_llm_raw()
         log_repo.info(
@@ -65,6 +76,7 @@ def node_plan(state: dict) -> dict:
             "Node succeeded: plan",
             {
                 "plan": ws.plan,
+                "repo_tree_path_lines": tree_path_count,
                 "llm_raw_tail": (last_llm[-2000:] if isinstance(last_llm, str) and last_llm else None),
             },
         )

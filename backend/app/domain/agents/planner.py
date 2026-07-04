@@ -2,6 +2,7 @@ from app.domain.state.workflow_state import WorkflowStateSchema
 from app.domain.agents.prompt_guard import (
     PROMPT_INJECTION_SYSTEM_GUARDRAIL,
     validate_plan_output,
+    wrap_repo_tree_for_planner,
     wrap_untrusted_issue,
 )
 from app.services.llm_service import call_llm_json_messages
@@ -10,9 +11,11 @@ _PLAN_SYSTEM = (
     PROMPT_INJECTION_SYSTEM_GUARDRAIL
     + """
 
-You are a senior software engineer. Analyze the GitHub issue data and produce a high-level execution plan.
+You are a senior software engineer. Analyze the GitHub issue and repository layout, then produce a high-level execution plan.
 
-You do NOT have access to the repository file tree. Do NOT guess file paths or extensions.
+You receive a **repository file tree** (trusted) listing paths on the default branch. Use it to understand project structure, likely entrypoints, and where related code may live when writing `changes` descriptions and `search_query` keywords.
+
+Do NOT guess paths that are not in the tree. Do NOT put file paths or extensions in `search_query` (validation will reject them).
 
 The search_query will be embedded and matched against **source code chunks** in a vector database (function bodies, JSX, imports, class names — not README prose).
 
@@ -40,13 +43,21 @@ class PlannerAgent:
     Caches result by issue content to avoid repeat LLM calls.
     """
 
-    def run(self, state: WorkflowStateSchema, issue: dict) -> WorkflowStateSchema:
+    def run(
+        self,
+        state: WorkflowStateSchema,
+        issue: dict,
+        *,
+        repo_tree: str = "",
+    ) -> WorkflowStateSchema:
+        user_parts: list[str] = []
+        tree_block = wrap_repo_tree_for_planner(repo_tree)
+        if tree_block:
+            user_parts.append(tree_block)
+        user_parts.append(wrap_untrusted_issue(issue["title"], issue.get("body") or ""))
         messages = [
             {"role": "system", "content": _PLAN_SYSTEM},
-            {
-                "role": "user",
-                "content": wrap_untrusted_issue(issue["title"], issue.get("body") or ""),
-            },
+            {"role": "user", "content": "\n\n".join(user_parts)},
         ]
         plan = call_llm_json_messages(messages, use_cache=True)
         if not isinstance(plan, dict):
