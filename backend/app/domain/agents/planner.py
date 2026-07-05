@@ -5,6 +5,7 @@ from app.domain.agents.prompt_guard import (
     wrap_repo_tree_for_planner,
     wrap_untrusted_issue,
 )
+from app.services.plan_scope import merge_plan_constraints, resolve_scope
 from app.services.llm_service import call_llm_json_messages
 
 _PLAN_SYSTEM = (
@@ -15,7 +16,11 @@ You are a senior software engineer. Analyze the GitHub issue and repository layo
 
 You receive a **repository file tree** (trusted) listing paths on the default branch. Use it to understand project structure, likely entrypoints, and where related code may live when writing `changes` descriptions and `search_query` keywords.
 
-Do NOT guess paths that are not in the tree. Do NOT put file paths or extensions in `search_query` (validation will reject them).
+Use the tree to infer architecture (e.g. Next.js `frontend/app/**/page.tsx` for UI pages vs Express `server/**` for APIs). When the issue says **no backend changes**, set `"scope": "frontend"` and include `"constraints": ["No backend changes"]`.
+
+In each change description, name the **exact repo-relative path** from the tree when editing an existing file, or the path to create for new files (e.g. `frontend/app/my-registrations/page.tsx`).
+
+Do NOT guess paths that are not in the tree unless the issue explicitly requires creating a new file at that location. Do NOT put file paths or extensions in `search_query` (validation will reject them).
 
 The search_query will be embedded and matched against **source code chunks** in a vector database (function bodies, JSX, imports, class names — not README prose).
 
@@ -29,9 +34,11 @@ search_query rules (critical for vector similarity):
 
 Respond ONLY with valid JSON in this exact format:
 {
-  "changes": ["description of change 1", "description of change 2"],
+  "changes": ["description with exact path from tree, e.g. Update frontend/components/navbar.tsx to add link"],
   "test_cases": ["test case description 1", "test case description 2"],
-  "search_query": "dense code-like keywords for embedding search"
+  "search_query": "dense code-like keywords for embedding search",
+  "scope": "frontend | backend | fullstack",
+  "constraints": ["No backend changes"]
 }
 """
 )
@@ -71,6 +78,8 @@ class PlannerAgent:
         validate_plan_output(plan)
         if not isinstance(plan.get("test_cases"), list):
             plan["test_cases"] = []
+        plan["scope"] = resolve_scope(plan, issue)
+        plan["constraints"] = merge_plan_constraints(plan, issue)
         plan.pop("files_to_modify", None)
         state.plan = plan
         return state

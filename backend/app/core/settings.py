@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = ""
     GROQ_BASE_URL: str = "https://api.groq.com"
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_MAX_OUTPUT_TOKENS: int = 4096
 
     # GitHub — server PAT for webhooks/background jobs when OAuth is enabled
     GITHUB_TOKEN: str = ""
@@ -83,14 +84,22 @@ class Settings(BaseSettings):
     )
     INDEX_UPSERT_BATCH_SIZE: int = 64
 
-    CONTEXT_SEARCH_TOP_K: int = 12
+    CONTEXT_SEARCH_TOP_K: int = 24
+    CONTEXT_SEARCH_TOP_K_PER_QUERY: int = 12
+    CONTEXT_SEARCH_MAX_QUERIES: int = 4
+    CONTEXT_TARGET_MAX_FILES: int = 8
+    CONTEXT_ALLOWLIST_MAX_FILES: int = 16
+    ENTRYPOINT_SCORE_BOOST: float = 0.08
+    ENTRYPOINT_MAX_INJECT: int = 4
+    SEARCH_QUERY_MAX: int = 500
     PLANNER_REPO_TREE_MAX_PATHS: int = 500
     PLANNER_REPO_TREE_MAX_CHARS: int = 8000
 
     # Agent limits
     MAX_RETRIES: int = 2
     MAX_AGENT_STEPS: int = 5
-    MAX_CONTEXT_TOKENS: int = 6000
+    MAX_CONTEXT_TOKENS: int = 8000
+    CODE_WRITER_MAX_FILES_PER_CALL: int = 1
     WORKFLOW_SKIP_TESTS: bool = False
 
     # Isolated sandbox runner (only service that should mount Docker socket)
@@ -147,6 +156,22 @@ class Settings(BaseSettings):
     def effective_embedding_dim(self) -> int | None:
         """Provider output dim, else explicit Qdrant dim, else inferred on first embed."""
         return self.provider_embedding_dim or self.QDRANT_EMBEDDING_DIM
+
+    @property
+    def groq_model_output_limit(self) -> int:
+        """Groq per-model max completion tokens (request values above this are clamped)."""
+        model = self.GROQ_MODEL.lower()
+        if "llama-4-scout" in model:
+            return 8192
+        if "llama-3.3-70b" in model:
+            return 32768
+        if "llama-3.1" in model:
+            return 8192
+        return 8192
+
+    @property
+    def effective_groq_max_output_tokens(self) -> int:
+        return min(self.GROQ_MAX_OUTPUT_TOKENS, self.groq_model_output_limit)
 
     @property
     def oauth_enabled(self) -> bool:

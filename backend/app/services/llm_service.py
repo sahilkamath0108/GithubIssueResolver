@@ -24,9 +24,21 @@ logger = logging.getLogger(__name__)
 
 # Stores the most recent raw LLM content in the current context (request/task)
 _last_llm_raw: contextvars.ContextVar[str | None] = contextvars.ContextVar("last_llm_raw", default=None)
+_last_llm_finish_reason: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "last_llm_finish_reason", default=None
+)
+
+
+class TruncatedLLMResponseError(ValueError):
+    """Raised when the provider stops due to output token limit (truncated JSON)."""
+
 
 def get_last_llm_raw() -> str | None:
     return _last_llm_raw.get()
+
+
+def get_last_llm_finish_reason() -> str | None:
+    return _last_llm_finish_reason.get()
 
 def _parse_ollama_stream_text(raw_text: str) -> str:
     """
@@ -73,32 +85,55 @@ def call_llm(prompt: str, use_cache: bool = True) -> str:
     return call_llm_messages([{"role": "user", "content": prompt}], use_cache=use_cache)
 
 
-def call_llm_messages(messages: list[dict], use_cache: bool = True) -> str:
+def call_llm_messages(
+    messages: list[dict],
+    use_cache: bool = True,
+    *,
+    max_tokens: int | None = None,
+) -> str:
     """
     Call Groq chat LLM with structured messages (system + user separation).
     Cache hit = zero LLM cost for repeated identical prompts.
     """
-    cache_input = json.dumps(messages, sort_keys=True)
+    cache_input = json.dumps({"messages": messages, "max_tokens": max_tokens}, sort_keys=True)
     if use_cache:
         cached = _get_cached(cache_input)
         if cached:
             text = cached["text"]
             _last_llm_raw.set(text)
+            _last_llm_finish_reason.set(cached.get("finish_reason"))
             return text
 
     if not settings.GROQ_API_KEY:
         raise RuntimeError("GROQ_API_KEY is not set. Add it to `.env`.")
 
+    resolved_max_tokens = (
+        min(max_tokens, settings.effective_groq_max_output_tokens)
+        if max_tokens is not None
+        else settings.effective_groq_max_output_tokens
+    )
+
     completion = _groq.chat.completions.create(
         model=settings.GROQ_MODEL,
         messages=messages,
         temperature=0.2,
+        max_tokens=resolved_max_tokens,
     )
     text = ""
+    finish_reason = None
     if completion.choices:
-        msg = completion.choices[0].message
+        choice = completion.choices[0]
+        msg = choice.message
+        finish_reason = getattr(choice, "finish_reason", None)
         if msg and getattr(msg, "content", None):
             text = msg.content or ""
+
+    if finish_reason == "length":
+        logger.warning(
+            "Groq response truncated at max_tokens=%s model=%s",
+            resolved_max_tokens,
+            settings.GROQ_MODEL,
+        )
 
     if not isinstance(text, str) or not text.strip():
         try:
@@ -113,15 +148,21 @@ def call_llm_messages(messages: list[dict], use_cache: bool = True) -> str:
         )
 
     if use_cache:
-        _set_cached(cache_input, {"text": text})
+        _set_cached(cache_input, {"text": text, "finish_reason": finish_reason})
 
     _last_llm_raw.set(text)
+    _last_llm_finish_reason.set(finish_reason)
     return text
 
 
-def call_llm_json_messages(messages: list[dict], use_cache: bool = True) -> dict:
+def call_llm_json_messages(
+    messages: list[dict],
+    use_cache: bool = True,
+    *,
+    max_tokens: int | None = None,
+) -> dict:
     """Call LLM with message list and parse JSON response."""
-    raw = call_llm_messages(messages, use_cache=use_cache)
+    raw = call_llm_messages(messages, use_cache=use_cache, max_tokens=max_tokens)
     return _parse_llm_json(raw, messages)
 
 
@@ -199,6 +240,10 @@ def _parse_llm_json(raw: str, repair_context: list[dict] | str) -> dict:
             logger.error("LLM JSON repair output (truncated): %s", repaired_trunc)
             print("[llm_service] JSON parse failed. Raw (truncated):", raw_trunc, file=sys.stderr)
             print("[llm_service] JSON repair output (truncated):", repaired_trunc, file=sys.stderr)
+            if get_last_llm_finish_reason() == "length":
+                raise TruncatedLLMResponseError(
+                    "LLM output was truncated at the token limit before valid JSON completed."
+                )
             raise ValueError(
                 "LLM returned invalid JSON even after repair attempt. "
                 "See logs for raw/repaired output."

@@ -69,6 +69,17 @@ def validate_plan_output(plan: dict) -> None:
         for pattern in _INJECTION_PATTERNS:
             if pattern.search(change):
                 raise ValueError(f"Plan changes[{idx}] contains disallowed instruction-like content.")
+    scope = plan.get("scope")
+    if scope is not None:
+        if not isinstance(scope, str) or scope.lower() not in ("frontend", "backend", "fullstack"):
+            raise ValueError("Plan scope must be frontend, backend, or fullstack.")
+    constraints = plan.get("constraints")
+    if constraints is not None:
+        if not isinstance(constraints, list):
+            raise ValueError("Plan constraints must be an array of strings.")
+        for idx, item in enumerate(constraints):
+            if not isinstance(item, str):
+                raise ValueError(f"Plan constraints[{idx}] must be a string.")
     search_query = plan.get("search_query")
     if not isinstance(search_query, str) or not search_query.strip():
         raise ValueError("Plan must include a non-empty search_query string.")

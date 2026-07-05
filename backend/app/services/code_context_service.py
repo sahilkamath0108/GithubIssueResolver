@@ -10,6 +10,14 @@ from typing import List, Dict, Set
 
 from app.core.settings import settings
 from app.core.security import sanitize_repo_path
+from app.services.plan_scope import (
+    Scope,
+    extract_paths_from_plan,
+    filter_paths_by_scope,
+    find_reference_paths,
+    path_allowed_for_scope,
+    resolve_scope,
+)
 
 
 _CHARS_PER_TOKEN = 4
@@ -56,36 +64,84 @@ def assign_target_files(
     plan: dict,
     vector_chunks: List[dict],
     *,
-    max_files: int = 5,
+    repo_paths: List[str] | None = None,
+    issue: dict | None = None,
+    max_files: int | None = None,
 ) -> dict:
     """
-    Pick files_to_modify from Qdrant semantic search hits.
-    Paths are chosen by vector rank only; full content is loaded from GitHub later.
+    Pick files_to_modify from plan path hints first, then Qdrant semantic search hits.
+    Respects issue/plan scope (e.g. frontend-only excludes server/ paths).
     """
+    limit = max_files if max_files is not None else settings.CONTEXT_TARGET_MAX_FILES
+    scope: Scope = resolve_scope(plan, issue or {})
+    repo_set = set(repo_paths or [])
+
+    hinted = filter_paths_by_scope(extract_paths_from_plan(plan), scope)
+    ordered = sorted(
+        vector_chunks,
+        key=lambda c: float(c.get("score") or 0),
+        reverse=True,
+    )
+
     targets: list[str] = []
     seen: set[str] = set()
-    for vc in vector_chunks:
-        path = vc.get("path")
-        if not isinstance(path, str) or not path or path in seen:
-            continue
-        try:
-            path = sanitize_repo_path(path)
-        except ValueError:
-            continue
+
+    def add(path: str) -> None:
+        if path in seen or len(targets) >= limit:
+            return
+        if not path_allowed_for_scope(path, scope):
+            return
         seen.add(path)
         targets.append(path)
 
+    for path in hinted:
+        try:
+            add(sanitize_repo_path(path))
+        except ValueError:
+            continue
+
+    for vc in ordered:
+        path = vc.get("path")
+        if not isinstance(path, str) or not path:
+            continue
+        try:
+            add(sanitize_repo_path(path))
+        except ValueError:
+            continue
+
     if not targets:
         raise ValueError(
-            "No target files found from Qdrant search. "
+            "No target files found from plan paths or Qdrant search. "
             "The repo may not be indexed for this embedding model — run a full re-index "
             f"(Indexing → Sync with force_full, or POST /api/v1/indexing/sync with force_full=true). "
-            f"Vector hits received: {len(vector_chunks)}."
+            f"Vector hits received: {len(vector_chunks)}. Scope: {scope}."
         )
 
-    plan["files_to_modify"] = targets[:max_files]
-    plan["_files_from_vector_search"] = True
+    files_to_create = [p for p in targets if p not in repo_set]
+    plan["files_to_modify"] = targets[:limit]
+    plan["scope"] = scope
+    if files_to_create:
+        plan["_files_to_create"] = files_to_create
+    plan["_files_from_vector_search"] = bool(vector_chunks)
     return plan
+
+
+def prepare_repo_files_for_targets(
+    planned_paths: List[str],
+    files: List[dict],
+    repo_paths: List[str],
+) -> tuple[List[dict], List[str]]:
+    """
+    Allow new files from the plan (empty placeholder content) and attach reference paths.
+    Returns (updated_files, reference_paths).
+    """
+    file_paths = {f["path"] for f in files}
+    create_paths = [p for p in planned_paths if p not in file_paths]
+    refs: list[str] = []
+    for new_path in create_paths:
+        files.append({"path": new_path, "content": ""})
+        refs.extend(find_reference_paths(new_path, repo_paths))
+    return files, refs
 
 
 def expand_write_allowlist(
@@ -94,7 +150,7 @@ def expand_write_allowlist(
     extra_paths: list[str],
     *,
     repo_url: str,
-    max_total_files: int = 12,
+    max_total_files: int | None = None,
 ) -> tuple[dict, list[dict], list[str]]:
     """
     Merge LLM-requested paths into files_to_modify, fetch missing bodies from GitHub,
@@ -102,6 +158,7 @@ def expand_write_allowlist(
     """
     from app.services import github_service
 
+    cap = max_total_files if max_total_files is not None else settings.CONTEXT_ALLOWLIST_MAX_FILES
     allowed = list(plan.get("files_to_modify") or [])
     seen = set(allowed)
     added: list[str] = []
@@ -113,7 +170,7 @@ def expand_write_allowlist(
             continue
         if path in seen:
             continue
-        if len(allowed) >= max_total_files:
+        if len(allowed) >= cap:
             break
         seen.add(path)
         allowed.append(path)
@@ -229,6 +286,8 @@ def build_context(
     planned_paths: List[str],
     vector_chunks: List[dict],
     all_files: List[dict],
+    *,
+    reference_paths: List[str] | None = None,
 ) -> List[dict]:
     """
     Build context for the code writer.
@@ -247,9 +306,10 @@ def build_context(
         seen.add(path)
         result.append({"path": path, "chunk": text, "source": source})
 
-    # 1. Target files — full GitHub content only
+    # 1. Target files — full GitHub content (or placeholder for new files)
     for path in planned_paths:
         if path not in file_map:
+            append(path, "", "target_new")
             continue
         append(path, file_map[path], "target_full")
 
@@ -257,6 +317,11 @@ def build_context(
     for f in resolve_dependencies(planned_paths, all_files):
         if f["path"] not in target_set:
             append(f["path"], f["content"], "target_dep")
+
+    # 2b. Reference templates for new files (similar existing pages/API modules)
+    for path in reference_paths or []:
+        if path in file_map and path not in target_set:
+            append(path, file_map[path], "reference_template")
 
     # 3. Other Qdrant hits (not edit targets) — context only
     for vc in vector_chunks:

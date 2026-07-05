@@ -4,7 +4,12 @@ from app.domain.agents.code_writer import CodeWriterAgent
 from app.domain.agents.fix_agent import FixAgent
 from app.services import github_service
 from app.services import qdrant_search_service
-from app.services.code_context_service import build_context, assign_target_files, expand_write_allowlist
+from app.services.code_context_service import (
+    assign_target_files,
+    build_context,
+    expand_write_allowlist,
+    prepare_repo_files_for_targets,
+)
 from app.domain.agents.write_guard import ExtraFilesRequestedError
 from app.core.code_safety import scan_generated_code
 from app.domain.agents.minimal_patch import filter_substantive_file_changes
@@ -144,26 +149,39 @@ def node_read_code(state: dict) -> dict:
         files = github_service.get_repo_files_cached(
             ws.repo_url, extensions=settings.index_file_extensions
         )
+        repo_paths = [f["path"] for f in files]
+        issue = github_service.get_issue(ws.issue_url)
 
-        # Vector search in Qdrant (payload.repo = owner/name) — paths only
-        query = ws.plan.get("search_query", " ".join(ws.plan.get("changes", [])))
-        vector_chunks = qdrant_search_service.search_relevant_chunks(repo_name, query)
+        # Multi-query vector search + scope-aware entrypoint boost
+        vector_chunks, search_queries = qdrant_search_service.search_for_plan(
+            repo_name,
+            ws.plan,
+            repo_paths=repo_paths,
+            issue=issue,
+        )
 
         log_repo.info(
             ws.task_id,
             "Qdrant vector search",
             {
                 "repo": repo_name,
-                "query": query,
+                "scope": (ws.plan or {}).get("scope"),
+                "queries": search_queries,
                 "hits": len(vector_chunks),
                 "paths": [c.get("path") for c in vector_chunks],
+                "scores": [c.get("score") for c in vector_chunks[:8]],
             },
         )
 
-        ws.plan = assign_target_files(ws.plan, vector_chunks)
+        ws.plan = assign_target_files(
+            ws.plan,
+            vector_chunks,
+            repo_paths=repo_paths,
+            issue=issue,
+        )
         planned_paths = ws.plan.get("files_to_modify", [])
 
-        # Ensure targets have full GitHub bodies (bulk fetch may miss paths)
+        # Fetch existing targets; allow plan-hinted new files with empty placeholder content
         file_paths = {f["path"] for f in files}
         missing_targets = [p for p in planned_paths if p not in file_paths]
         if missing_targets:
@@ -171,15 +189,21 @@ def node_read_code(state: dict) -> dict:
             files = github_service.merge_repo_files(files, extra)
             file_paths = {f["path"] for f in files}
 
-        still_missing = [p for p in planned_paths if p not in file_paths]
+        files, reference_paths = prepare_repo_files_for_targets(planned_paths, files, repo_paths)
+        still_missing = [p for p in planned_paths if p not in {f["path"] for f in files}]
         if still_missing:
             raise RuntimeError(
-                f"Could not fetch full file content from GitHub for: {still_missing}"
+                f"Could not resolve target paths: {still_missing}"
             )
 
         ws.repo_files = files
 
-        ws.relevant_chunks = build_context(planned_paths, vector_chunks, files)
+        ws.relevant_chunks = build_context(
+            planned_paths,
+            vector_chunks,
+            files,
+            reference_paths=reference_paths,
+        )
 
         if not ws.relevant_chunks:
             raise RuntimeError(
@@ -195,6 +219,8 @@ def node_read_code(state: dict) -> dict:
                 "files": [c["path"] for c in ws.relevant_chunks],
                 "sources": [c.get("source") for c in ws.relevant_chunks],
                 "files_to_modify": planned_paths,
+                "files_to_create": ws.plan.get("_files_to_create", []),
+                "reference_paths": reference_paths,
             },
         )
         log_repo.info(ws.task_id, "Node succeeded: read_code", {"context_files": len(ws.relevant_chunks)})

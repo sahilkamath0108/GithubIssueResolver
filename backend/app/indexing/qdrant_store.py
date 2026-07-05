@@ -149,7 +149,10 @@ class QdrantVectorStore:
             path = payload.get("path")
             text = payload.get("text")
             if isinstance(path, str) and isinstance(text, str):
-                out.append({"path": path, "chunk": text})
+                item: dict = {"path": path, "chunk": text}
+                if point.score is not None:
+                    item["score"] = float(point.score)
+                out.append(item)
 
         logger.info(
             "Qdrant search repo=%s raw_hits=%s usable_chunks=%s top_k=%s",
