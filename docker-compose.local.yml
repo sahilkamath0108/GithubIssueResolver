@@ -24,3 +24,7 @@ services:
         condition: service_started
       sandbox:
         condition: service_started
+
+  frontend:
+    ports:
+      - "3000:80"

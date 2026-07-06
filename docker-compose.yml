@@ -65,8 +65,6 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: multiagent_frontend
-    ports:
-      - "3000:80"
     depends_on:
       - backend
 
