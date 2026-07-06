@@ -17,6 +17,7 @@ def test_validate_plan_rejects_path_in_search_query():
     with pytest.raises(ValueError, match="file paths"):
         validate_plan_output(
             {
+                "files_to_modify": ["src/components/Counter.tsx"],
                 "changes": ["fix bug"],
                 "search_query": "src/components/Counter.tsx onClick handler",
             }
@@ -26,6 +27,7 @@ def test_validate_plan_rejects_path_in_search_query():
 def test_validate_plan_accepts_keyword_query():
     validate_plan_output(
         {
+            "files_to_modify": ["src/App.jsx"],
             "changes": ["increment counter"],
             "search_query": "counter increment button onClick useState setCount",
         }

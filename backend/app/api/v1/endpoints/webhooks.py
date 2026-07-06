@@ -91,7 +91,8 @@ async def github_issues_webhook(request: Request, db: Session = Depends(get_db))
     task_repo = TaskRepository(db)
     task = task_repo.create(issue_url=issue_url, repo_url=repo_url)
 
-    run_workflow_task.apply_async(args=[task.id, issue_url, repo_url], queue="main_queue")
+    async_result = run_workflow_task.apply_async(args=[task.id, issue_url, repo_url], queue="main_queue")
+    task_repo.set_celery_task_id(task.id, async_result.id)
 
     logger.info(
         "Webhook enqueued workflow task",

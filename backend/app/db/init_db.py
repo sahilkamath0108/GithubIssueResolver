@@ -46,6 +46,32 @@ def ensure_schema_compat(conn):
         BEGIN
             IF NOT EXISTS (
                 SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'tasks' AND column_name = 'celery_task_id'
+            ) THEN
+                ALTER TABLE tasks ADD COLUMN celery_task_id VARCHAR(255) NULL;
+            END IF;
+        END
+        $$;
+    """))
+    conn.execute(text("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_enum e
+                JOIN pg_type t ON e.enumtypid = t.oid
+                WHERE t.typname = 'taskstatus' AND e.enumlabel = 'cancelled'
+            ) THEN
+                ALTER TYPE taskstatus ADD VALUE IF NOT EXISTS 'cancelled';
+            END IF;
+        END
+        $$;
+    """))
+    conn.execute(text("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
                 WHERE table_name = 'repo_index_state' AND column_name = 'embedding_model'
             ) THEN
                 ALTER TABLE repo_index_state ADD COLUMN embedding_model VARCHAR(128) NULL;

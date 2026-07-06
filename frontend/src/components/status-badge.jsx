@@ -3,6 +3,7 @@ import {
   CircleDashed,
   Loader2,
   XCircle,
+  Ban,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -27,6 +28,11 @@ const taskConfig = {
     label: 'Failed',
     icon: XCircle,
     className: 'bg-destructive/10 text-destructive border-destructive/20',
+  },
+  cancelled: {
+    label: 'Cancelled',
+    icon: Ban,
+    className: 'bg-muted text-muted-foreground border-border',
   },
 }
 

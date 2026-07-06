@@ -58,11 +58,13 @@ export function buildPipelineSteps(currentStep, status) {
   const activeIdx = Math.max(0, STEP_ORDER.indexOf(activeKey))
   const isSuccess = status === 'success'
   const isFailed = status === 'failed'
+  const isCancelled = status === 'cancelled'
   const isActive = status === 'running' || status === 'queued'
 
   return STEP_ORDER.map((key, i) => {
     let stepStatus = 'pending'
     if (isSuccess) stepStatus = 'done'
+    else if (isCancelled) stepStatus = i <= activeIdx ? 'done' : 'pending'
     else if (isFailed && i < activeIdx) stepStatus = 'done'
     else if (isFailed && i === activeIdx) stepStatus = 'failed'
     else if (isFailed && i > activeIdx) stepStatus = 'pending'

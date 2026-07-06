@@ -7,6 +7,7 @@ from app.repositories.dlq_repo import DLQRepository
 from app.repositories.github_user_repo import GitHubUserRepository
 from app.models.task import TaskStatus
 from app.domain.graph.workflow_graph import run_workflow
+from app.domain.workflow_exceptions import WorkflowCancelledError
 from app.services import github_service
 
 
@@ -58,6 +59,11 @@ def run_workflow_task(self, task_id: int, issue_url: str, repo_url: str, github_
                 max_retries=settings.MAX_RETRIES,
             )
 
+        if task_repo.is_cancelled(task_id):
+            log_repo.info(task_id, "Workflow stopped after cancellation")
+            db.commit()
+            return
+
         if final_state.get("failed"):
             reason = final_state.get("failure_reason", "Unknown failure")
             step = final_state.get("error_type", final_state.get("failed_step", "unknown"))
@@ -72,8 +78,16 @@ def run_workflow_task(self, task_id: int, issue_url: str, repo_url: str, github_
 
         db.commit()
 
+    except WorkflowCancelledError:
+        log_repo.info(task_id, "Workflow cancelled")
+        db.commit()
+        return
     except Exception as exc:
         db.rollback()
+        if task_repo.is_cancelled(task_id):
+            log_repo.info(task_id, "Workflow cancelled during execution")
+            db.commit()
+            return
         reason = str(exc)
         task_repo.update_status(task_id, TaskStatus.failed, error=reason)
         log_repo.error(task_id, f"Unexpected workflow error: {exc}")

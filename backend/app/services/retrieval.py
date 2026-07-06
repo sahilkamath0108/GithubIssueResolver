@@ -120,6 +120,10 @@ def _frontend_entrypoint_priority(path: str) -> float:
     normalized = path.replace("\\", "/").lower()
     if normalized.endswith("navbar.tsx") or normalized.endswith("navbar.jsx"):
         return 3.0
+    if normalized.endswith(("app.jsx", "app.tsx")) and (
+        normalized.startswith("src/") or "/" not in normalized
+    ):
+        return 2.8
     if "/utils/apis/" in normalized and normalized.endswith((".ts", ".tsx", ".js", ".jsx")):
         return 2.5
     if "/app/" in normalized and normalized.endswith(("page.tsx", "page.jsx")):

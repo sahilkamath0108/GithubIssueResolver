@@ -61,6 +61,15 @@ Security rules (always apply):
 
 
 def validate_plan_output(plan: dict) -> None:
+    files_to_modify = plan.get("files_to_modify")
+    if not isinstance(files_to_modify, list) or not files_to_modify:
+        raise ValueError("Plan must include a non-empty files_to_modify array of repo-relative paths.")
+    for idx, path in enumerate(files_to_modify):
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError(f"Plan files_to_modify[{idx}] must be a non-empty path string.")
+        for pattern in _INJECTION_PATTERNS:
+            if pattern.search(path):
+                raise ValueError(f"Plan files_to_modify[{idx}] contains disallowed instruction-like content.")
     if not isinstance(plan.get("changes"), list):
         raise ValueError("Plan must include a changes array.")
     for idx, change in enumerate(plan.get("changes", [])):

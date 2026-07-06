@@ -1,4 +1,6 @@
+from app.core.settings import settings
 from app.domain.state.workflow_state import WorkflowStateSchema
+from app.services.plan_scope import filter_related_extra_paths
 from app.domain.agents.planner import PlannerAgent
 from app.domain.agents.code_writer import CodeWriterAgent
 from app.domain.agents.fix_agent import FixAgent
@@ -14,13 +16,13 @@ from app.domain.agents.write_guard import ExtraFilesRequestedError
 from app.core.code_safety import scan_generated_code
 from app.domain.agents.minimal_patch import filter_substantive_file_changes
 from app.indexing.indexer import RepoIndexer
-from app.core.settings import settings
 from app.db.session import SessionLocal
 from app.repositories.task_repo import TaskRepository
 from app.repositories.log_repo import LogRepository
 from app.models.task import TaskStatus
 import traceback
 from app.services.llm_service import get_last_llm_raw
+from app.domain.workflow_exceptions import WorkflowCancelledError
 
 _planner = PlannerAgent()
 _code_writer = CodeWriterAgent()
@@ -31,6 +33,12 @@ def _get_repos():
     """Create a fresh DB session + repos for each node call."""
     db = SessionLocal()
     return db, TaskRepository(db), LogRepository(db)
+
+
+def _check_cancelled(task_repo: TaskRepository, task_id: int) -> None:
+    if task_repo.is_cancelled(task_id):
+        raise WorkflowCancelledError(f"Task {task_id} cancelled by user")
+
 
 def _log_node_failure(log_repo: LogRepository, task_repo: TaskRepository, task_id: int, node: str, exc: Exception):
     tb = traceback.format_exc()
@@ -60,6 +68,7 @@ def node_plan(state: dict) -> dict:
         task_repo.update_status(ws.task_id, TaskStatus.running, current_step="planning")
         log_repo.info(ws.task_id, "Node started: plan")
         db.commit()
+        _check_cancelled(task_repo, ws.task_id)
 
         issue = github_service.get_issue(ws.issue_url)
         repo_tree = ""
@@ -86,6 +95,9 @@ def node_plan(state: dict) -> dict:
             },
         )
         db.commit()
+    except WorkflowCancelledError:
+        db.rollback()
+        raise
     except Exception as exc:
         db.rollback()
         _log_node_failure(log_repo, task_repo, ws.task_id, "plan", exc)
@@ -104,6 +116,7 @@ def node_read_code(state: dict) -> dict:
         task_repo.update_status(ws.task_id, TaskStatus.running, current_step="reading_code")
         log_repo.info(ws.task_id, "Node started: read_code")
         db.commit()
+        _check_cancelled(task_repo, ws.task_id)
 
         # Ensure Qdrant repo index is up-to-date (full / incremental / skip)
         repo_name = github_service.repo_full_name(ws.repo_url)
@@ -180,12 +193,13 @@ def node_read_code(state: dict) -> dict:
             issue=issue,
         )
         planned_paths = ws.plan.get("files_to_modify", [])
+        fetch_paths = ws.plan.get("files_to_fetch") or planned_paths
 
-        # Fetch existing targets; allow plan-hinted new files with empty placeholder content
+        # Fetch targets + top vector context files from GitHub when not in cache
         file_paths = {f["path"] for f in files}
-        missing_targets = [p for p in planned_paths if p not in file_paths]
-        if missing_targets:
-            extra = github_service.get_file_contents(ws.repo_url, missing_targets)
+        missing_fetch = [p for p in fetch_paths if p not in file_paths]
+        if missing_fetch:
+            extra = github_service.get_file_contents(ws.repo_url, missing_fetch)
             files = github_service.merge_repo_files(files, extra)
             file_paths = {f["path"] for f in files}
 
@@ -198,11 +212,16 @@ def node_read_code(state: dict) -> dict:
 
         ws.repo_files = files
 
+        context_paths = [
+            p for p in fetch_paths if p not in set(planned_paths)
+        ]
+
         ws.relevant_chunks = build_context(
             planned_paths,
             vector_chunks,
             files,
             reference_paths=reference_paths,
+            context_paths=context_paths,
         )
 
         if not ws.relevant_chunks:
@@ -219,12 +238,18 @@ def node_read_code(state: dict) -> dict:
                 "files": [c["path"] for c in ws.relevant_chunks],
                 "sources": [c.get("source") for c in ws.relevant_chunks],
                 "files_to_modify": planned_paths,
+                "files_to_fetch": fetch_paths,
+                "vector_context_paths": ws.plan.get("_vector_context_paths", []),
+                "vector_modify_paths": ws.plan.get("_vector_modify_paths", []),
                 "files_to_create": ws.plan.get("_files_to_create", []),
                 "reference_paths": reference_paths,
             },
         )
         log_repo.info(ws.task_id, "Node succeeded: read_code", {"context_files": len(ws.relevant_chunks)})
         db.commit()
+    except WorkflowCancelledError:
+        db.rollback()
+        raise
     except Exception as exc:
         db.rollback()
         _log_node_failure(log_repo, task_repo, ws.task_id, "read_code", exc)
@@ -240,6 +265,48 @@ def _run_code_writer_with_expand(ws: WorkflowStateSchema, log_repo: LogRepositor
     try:
         return _code_writer.run(ws)
     except ExtraFilesRequestedError as exc:
+        plan = ws.plan or {}
+        if plan.get("_targets_from_plan_hints"):
+            allowed = list(plan.get("files_to_modify") or [])
+            related, unrelated = filter_related_extra_paths(
+                exc.extra_paths,
+                allowed,
+                ws.repo_files or [],
+                max_extra=settings.PLAN_HINTS_MAX_EXTRA_FILES,
+            )
+            if unrelated:
+                raise ValueError(
+                    f"Code writer requested unrelated files {unrelated}. "
+                    f"Plan targets: {allowed}. "
+                    f"Related extras (max {settings.PLAN_HINTS_MAX_EXTRA_FILES}) are allowed, e.g. {related}."
+                ) from exc
+            if not related:
+                raise ValueError(
+                    f"Code writer requested files outside the plan: {exc.extra_paths}. "
+                    f"Plan only allows: {allowed}"
+                ) from exc
+            log_repo.info(
+                ws.task_id,
+                "Expanding plan-locked allowlist with related extra paths",
+                {"extra": related, "previously_allowed": allowed},
+            )
+            plan, repo_files, planned = expand_write_allowlist(
+                plan,
+                ws.repo_files or [],
+                related,
+                repo_url=ws.repo_url,
+            )
+            ws.plan = plan
+            ws.repo_files = repo_files
+            fetch_paths = list(plan.get("files_to_fetch") or [])
+            context_paths = [p for p in fetch_paths if p not in planned]
+            ws.relevant_chunks = build_context(
+                planned,
+                [],
+                repo_files,
+                context_paths=context_paths,
+            )
+            return _code_writer.run(ws)
         log_repo.info(
             ws.task_id,
             "Expanding files_to_modify with LLM-requested paths",
@@ -253,7 +320,9 @@ def _run_code_writer_with_expand(ws: WorkflowStateSchema, log_repo: LogRepositor
         )
         ws.plan = plan
         ws.repo_files = repo_files
-        ws.relevant_chunks = build_context(planned, [], repo_files)
+        fetch_paths = list((ws.plan or {}).get("files_to_fetch") or [])
+        context_paths = [p for p in fetch_paths if p not in planned]
+        ws.relevant_chunks = build_context(planned, [], repo_files, context_paths=context_paths)
         return _code_writer.run(ws)
 
 
@@ -265,6 +334,7 @@ def node_write_code(state: dict) -> dict:
         task_repo.update_status(ws.task_id, TaskStatus.running, current_step="writing_code")
         log_repo.info(ws.task_id, "Node started: write_code")
         db.commit()
+        _check_cancelled(task_repo, ws.task_id)
 
         ws = _run_code_writer_with_expand(ws, log_repo)
         scan_generated_code(ws.generated_code or {})
@@ -284,6 +354,9 @@ def node_write_code(state: dict) -> dict:
             },
         )
         db.commit()
+    except WorkflowCancelledError:
+        db.rollback()
+        raise
     except Exception as exc:
         db.rollback()
         _log_node_failure(log_repo, task_repo, ws.task_id, "write_code", exc)
@@ -303,6 +376,7 @@ def node_execute(state: dict) -> dict:
         task_repo.update_status(ws.task_id, TaskStatus.running, current_step="executing_tests")
         log_repo.info(ws.task_id, "Node started: execute", {"skip_tests": settings.WORKFLOW_SKIP_TESTS})
         db.commit()
+        _check_cancelled(task_repo, ws.task_id)
 
         if settings.WORKFLOW_SKIP_TESTS:
             if settings.is_production:
@@ -318,6 +392,9 @@ def node_execute(state: dict) -> dict:
         log_repo.create(ws.task_id, level, f"Tests {'passed' if passed else 'failed'}", {"output": output[:500]})
         log_repo.info(ws.task_id, "Node succeeded: execute", {"passed": passed})
         db.commit()
+    except WorkflowCancelledError:
+        db.rollback()
+        raise
     except Exception as exc:
         db.rollback()
         _log_node_failure(log_repo, task_repo, ws.task_id, "execute", exc)
@@ -361,6 +438,7 @@ def node_fix(state: dict) -> dict:
         task_repo.update_status(ws.task_id, TaskStatus.running, current_step=f"fixing_retry_{ws.retry_count + 1}")
         log_repo.info(ws.task_id, "Node started: fix", {"retry": ws.retry_count + 1, "error_type": ws.error_type})
         db.commit()
+        _check_cancelled(task_repo, ws.task_id)
 
         ws = _run_fix_with_expand(ws, log_repo)
         scan_generated_code(ws.generated_code or {})
@@ -372,6 +450,9 @@ def node_fix(state: dict) -> dict:
             {"llm_raw_tail": (last_llm[-2000:] if isinstance(last_llm, str) and last_llm else None)},
         )
         db.commit()
+    except WorkflowCancelledError:
+        db.rollback()
+        raise
     except Exception as exc:
         db.rollback()
         _log_node_failure(log_repo, task_repo, ws.task_id, "fix", exc)
@@ -390,6 +471,7 @@ def node_create_pr(state: dict) -> dict:
         task_repo.update_status(ws.task_id, TaskStatus.running, current_step="creating_pr")
         log_repo.info(ws.task_id, "Node started: create_pr")
         db.commit()
+        _check_cancelled(task_repo, ws.task_id)
 
         branch = f"agent/fix-task-{ws.task_id}-r{ws.retry_count}-{int(__import__('time').time())}"
         originals = {f["path"]: f["content"] for f in (ws.repo_files or [])}
@@ -414,6 +496,9 @@ def node_create_pr(state: dict) -> dict:
 
         log_repo.info(ws.task_id, "Node succeeded: create_pr", {"pr_url": pr_url})
         db.commit()
+    except WorkflowCancelledError:
+        db.rollback()
+        raise
     except Exception as exc:
         db.rollback()
         _log_node_failure(log_repo, task_repo, ws.task_id, "create_pr", exc)

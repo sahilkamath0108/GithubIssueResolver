@@ -6,8 +6,10 @@ import {
   GitPullRequest,
   RefreshCw,
   RotateCcw,
+  Ban,
 } from 'lucide-react'
 import {
+  cancelTask,
   extractErrorMessage,
   getTaskLogs,
   getTaskStatus,
@@ -29,6 +31,7 @@ import {
 } from '@/lib/task-utils'
 
 const ACTIVE = new Set(['queued', 'running'])
+const CANCELLABLE = new Set(['queued', 'running'])
 
 export default function TaskDetail() {
   const { taskUuid } = useParams()
@@ -38,6 +41,7 @@ export default function TaskDetail() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [retrying, setRetrying] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
 
   const refresh = useCallback(async () => {
     try {
@@ -68,6 +72,19 @@ export default function TaskDetail() {
     const id = setInterval(refresh, 4000)
     return () => clearInterval(id)
   }, [status?.status, refresh])
+
+  async function handleCancel() {
+    setCancelling(true)
+    setError('')
+    try {
+      await cancelTask(taskUuid)
+      await refresh()
+    } catch (err) {
+      setError(extractErrorMessage(err))
+    } finally {
+      setCancelling(false)
+    }
+  }
 
   async function handleRetry() {
     setRetrying(true)
@@ -115,6 +132,17 @@ export default function TaskDetail() {
           <RefreshCw className="size-3.5" />
           Refresh
         </Button>
+        {status && CANCELLABLE.has(status.status) && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleCancel}
+            disabled={cancelling}
+          >
+            <Ban className="size-3.5" />
+            {cancelling ? 'Cancelling…' : 'Cancel'}
+          </Button>
+        )}
         {status?.status === 'failed' && (
           <Button size="sm" onClick={handleRetry} disabled={retrying}>
             <RotateCcw className="size-3.5" />

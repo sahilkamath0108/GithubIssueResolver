@@ -50,6 +50,13 @@ def test_apply_entrypoint_boost_raises_entrypoint_score():
     assert by_path["server/app.js"] > by_path["src/util.py"]
 
 
+def test_rank_retrieval_keeps_src_app_jsx_under_frontend_scope():
+    hits = [{"path": "src/App.jsx", "chunk": "export default App", "score": 0.85}]
+    ranked = rank_retrieval_hits(hits, repo_paths=["src/App.jsx", "src/index.js"], scope="frontend")
+    assert len(ranked) == 1
+    assert ranked[0]["path"] == "src/App.jsx"
+
+
 def test_rank_retrieval_injects_missing_frontend_entrypoint():
     hits = [{"path": "frontend/components/Counter.tsx", "chunk": "jsx", "score": 0.8}]
     repo_paths = [

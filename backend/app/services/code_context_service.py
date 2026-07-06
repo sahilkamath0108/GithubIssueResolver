@@ -12,7 +12,7 @@ from app.core.settings import settings
 from app.core.security import sanitize_repo_path
 from app.services.plan_scope import (
     Scope,
-    extract_paths_from_plan,
+    collect_plan_target_paths,
     filter_paths_by_scope,
     find_reference_paths,
     path_allowed_for_scope,
@@ -60,6 +60,38 @@ def cap_context(
     return result
 
 
+def _top_vector_paths(
+    vector_chunks: List[dict],
+    scope: Scope,
+    *,
+    limit: int | None = None,
+) -> list[str]:
+    """Unique top-scoring vector hit paths (scope-filtered), up to `limit`."""
+    cap = limit if limit is not None else settings.CONTEXT_VECTOR_FETCH_TOP_FILES
+    ordered = sorted(
+        vector_chunks,
+        key=lambda c: float(c.get("score") or 0),
+        reverse=True,
+    )
+    paths: list[str] = []
+    seen: set[str] = set()
+    for vc in ordered:
+        if len(paths) >= cap:
+            break
+        path = vc.get("path")
+        if not isinstance(path, str) or not path:
+            continue
+        try:
+            path = sanitize_repo_path(path)
+        except ValueError:
+            continue
+        if not path_allowed_for_scope(path, scope) or path in seen:
+            continue
+        seen.add(path)
+        paths.append(path)
+    return paths
+
+
 def assign_target_files(
     plan: dict,
     vector_chunks: List[dict],
@@ -69,60 +101,80 @@ def assign_target_files(
     max_files: int | None = None,
 ) -> dict:
     """
-    Pick files_to_modify from plan path hints first, then Qdrant semantic search hits.
-    Respects issue/plan scope (e.g. frontend-only excludes server/ paths).
+    Build files_to_modify from planner paths plus top vector-search hits, and
+    files_to_fetch as the union (for GitHub load). Planner paths come first.
+    Scope uses a backend denylist.
     """
     limit = max_files if max_files is not None else settings.CONTEXT_TARGET_MAX_FILES
     scope: Scope = resolve_scope(plan, issue or {})
     repo_set = set(repo_paths or [])
 
-    hinted = filter_paths_by_scope(extract_paths_from_plan(plan), scope)
-    ordered = sorted(
-        vector_chunks,
-        key=lambda c: float(c.get("score") or 0),
-        reverse=True,
-    )
+    planner_paths_raw = collect_plan_target_paths(plan)
+    planner_paths = filter_paths_by_scope(planner_paths_raw, scope)
+    # Trust explicit planner paths when scope heuristics over-filter (e.g. prometheus.yml + scope=backend).
+    if not planner_paths and planner_paths_raw:
+        planner_paths = planner_paths_raw
+    vector_paths = _top_vector_paths(vector_chunks, scope)
 
-    targets: list[str] = []
+    modify_targets: list[str] = []
     seen: set[str] = set()
 
-    def add(path: str) -> None:
-        if path in seen or len(targets) >= limit:
+    def add_modify(path: str) -> None:
+        if path in seen or len(modify_targets) >= limit:
             return
         if not path_allowed_for_scope(path, scope):
             return
         seen.add(path)
-        targets.append(path)
+        modify_targets.append(path)
 
-    for path in hinted:
+    for path in planner_paths:
         try:
-            add(sanitize_repo_path(path))
+            add_modify(sanitize_repo_path(path))
         except ValueError:
             continue
 
-    for vc in ordered:
-        path = vc.get("path")
-        if not isinstance(path, str) or not path:
-            continue
-        try:
-            add(sanitize_repo_path(path))
-        except ValueError:
-            continue
-
-    if not targets:
+    if not modify_targets:
         raise ValueError(
-            "No target files found from plan paths or Qdrant search. "
-            "The repo may not be indexed for this embedding model — run a full re-index "
-            f"(Indexing → Sync with force_full, or POST /api/v1/indexing/sync with force_full=true). "
-            f"Vector hits received: {len(vector_chunks)}. Scope: {scope}."
+            "Planner listed file paths but none passed scope validation. "
+            f"Listed paths: {planner_paths}. Scope: {scope}. "
+            "For frontend-only issues, list client-side paths only; for backend-only, list server paths."
         )
 
-    files_to_create = [p for p in targets if p not in repo_set]
-    plan["files_to_modify"] = targets[:limit]
+    planner_modify_set = set(modify_targets)
+
+    for path in vector_paths:
+        try:
+            add_modify(sanitize_repo_path(path))
+        except ValueError:
+            continue
+
+    fetch_targets: list[str] = []
+    fetch_seen: set[str] = set()
+
+    def add_fetch(path: str) -> None:
+        if path in fetch_seen:
+            return
+        if not path_allowed_for_scope(path, scope):
+            return
+        fetch_seen.add(path)
+        fetch_targets.append(path)
+
+    for path in modify_targets:
+        add_fetch(path)
+    for path in vector_paths:
+        add_fetch(path)
+
+    files_to_create = [p for p in modify_targets if p not in repo_set]
+    plan["files_to_modify"] = modify_targets
+    plan["files_to_fetch"] = fetch_targets
     plan["scope"] = scope
+    plan["_targets_from_plan_hints"] = True
+    plan["_vector_modify_paths"] = [p for p in modify_targets if p not in planner_modify_set]
+    plan["_vector_context_paths"] = [p for p in vector_paths if p not in set(modify_targets)]
     if files_to_create:
         plan["_files_to_create"] = files_to_create
-    plan["_files_from_vector_search"] = bool(vector_chunks)
+    if vector_paths:
+        plan["_files_from_vector_search"] = True
     return plan
 
 
@@ -288,12 +340,15 @@ def build_context(
     all_files: List[dict],
     *,
     reference_paths: List[str] | None = None,
+    context_paths: List[str] | None = None,
+    plan_hints_only: bool = False,
 ) -> List[dict]:
     """
     Build context for the code writer.
 
-    - files_to_modify: always full GitHub file bodies (never Qdrant snippets alone)
-    - Other vector hits: supplementary full files or snippets, subject to token cap
+    - files_to_modify (planned_paths): always full GitHub file bodies
+    - context_paths: supplementary full files (e.g. top vector hits), not edit targets
+    - Other vector hits: snippets when full file unavailable, subject to token cap
     """
     file_map: Dict[str, str] = {f["path"]: f["content"] for f in all_files}
     target_set = set(planned_paths)
@@ -301,7 +356,9 @@ def build_context(
     result: List[dict] = []
 
     def append(path: str, text: str, source: str) -> None:
-        if path in seen or not text.strip():
+        if path in seen:
+            return
+        if not text.strip() and source not in ("target_new", "target_full"):
             return
         seen.add(path)
         result.append({"path": path, "chunk": text, "source": source})
@@ -323,16 +380,29 @@ def build_context(
         if path in file_map and path not in target_set:
             append(path, file_map[path], "reference_template")
 
-    # 3. Other Qdrant hits (not edit targets) — context only
+    # 2c. Explicit context paths (planner fetch list + top vector hits)
+    for path in context_paths or []:
+        if path in target_set or path in seen:
+            continue
+        if path in file_map:
+            append(path, file_map[path], "vector_context")
+
+    # 3. Remaining Qdrant hits — snippets or full files when not already included
+    related_added = 0
+    related_limit = 2 if plan_hints_only else 12
     for vc in vector_chunks:
+        if plan_hints_only and related_added >= related_limit:
+            break
         path = vc.get("path")
         if not isinstance(path, str) or not path or path in target_set or path in seen:
             continue
         if path in file_map:
             append(path, file_map[path], "related_full")
+            related_added += 1
         else:
             chunk_text = vc.get("chunk") or vc.get("text")
             if isinstance(chunk_text, str):
                 append(path, chunk_text, "related_snippet")
+                related_added += 1
 
     return cap_context(result, priority_paths=target_set)

@@ -5,10 +5,13 @@ from app.api.deps import get_db, resolve_auth_context, assert_task_visible
 from app.core.rate_limit import rate_limit_dep
 from app.core.settings import settings
 from app.repositories.github_user_repo import GitHubUserRepository
+from app.repositories.log_repo import LogRepository
 from app.repositories.task_repo import TaskRepository
 from app.schemas.workflow import WorkflowSubmitRequest, WorkflowSubmitResponse, TaskStatusResponse
 from app.models.task import TaskStatus
 from app.services import auth_service, github_service
+from app.services.workflow_cancel_service import cancel_workflow_task
+from app.domain.workflow_exceptions import TaskNotCancellableError
 from app.tasks.workflow_tasks import run_workflow_task
 from fastapi import Request
 
@@ -51,16 +54,18 @@ def submit_workflow(
         )
 
     task_repo = TaskRepository(db)
+    log_repo = LogRepository(db)
     task = task_repo.create(
         issue_url=payload.issue_url,
         repo_url=payload.repo_url,
         github_user_id=github_user_id,
     )
 
-    run_workflow_task.apply_async(
+    async_result = run_workflow_task.apply_async(
         args=[task.id, payload.issue_url, payload.repo_url, github_user_id],
         queue="main_queue",
     )
+    task_repo.set_celery_task_id(task.id, async_result.id)
 
     return WorkflowSubmitResponse(
         task_id=task.id,
@@ -104,3 +109,20 @@ def retry_task(task_uuid: str, request: Request, db: Session = Depends(get_db)):
 
     retry_failed_task.apply_async(args=[task.id], queue="retry_queue")
     return {"message": "Retry queued."}
+
+
+@router.post("/{task_uuid}/cancel", dependencies=rate_limit_dep(times=30))
+def cancel_task(task_uuid: str, request: Request, db: Session = Depends(get_db)):
+    """Cancel a queued or running workflow."""
+    task_repo = TaskRepository(db)
+    log_repo = LogRepository(db)
+    task = task_repo.get_by_uuid(task_uuid)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    assert_task_visible(task, request, db)
+    try:
+        cancel_workflow_task(task, task_repo=task_repo, log_repo=log_repo)
+    except TaskNotCancellableError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.commit()
+    return {"message": "Workflow cancelled.", "status": TaskStatus.cancelled.value}

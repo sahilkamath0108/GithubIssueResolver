@@ -51,6 +51,30 @@ class TaskRepository:
         self.db.refresh(task)
         return task
 
+    def set_celery_task_id(self, task_id: int, celery_task_id: str) -> Optional[Task]:
+        task = self.get_by_id(task_id)
+        if not task:
+            return None
+        task.celery_task_id = celery_task_id
+        self.db.commit()
+        self.db.refresh(task)
+        return task
+
+    def is_cancelled(self, task_id: int) -> bool:
+        task = self.get_by_id(task_id)
+        return task is not None and task.status == TaskStatus.cancelled
+
+    def cancel(self, task_id: int) -> Optional[Task]:
+        task = self.get_by_id(task_id)
+        if not task:
+            return None
+        task.status = TaskStatus.cancelled
+        task.current_step = "cancelled"
+        task.error = "Cancelled by user"
+        self.db.commit()
+        self.db.refresh(task)
+        return task
+
     def list_by_status(self, status: TaskStatus) -> List[Task]:
         return self.db.query(Task).filter(Task.status == status).all()
 

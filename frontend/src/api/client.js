@@ -78,6 +78,11 @@ export async function getTaskStatus(taskUuid) {
   return data
 }
 
+export async function cancelTask(taskUuid) {
+  const { data } = await api.post(`/api/v1/workflow/${taskUuid}/cancel`)
+  return data
+}
+
 export async function retryTask(taskUuid) {
   const { data } = await api.post(`/api/v1/workflow/${taskUuid}/retry`)
   return data

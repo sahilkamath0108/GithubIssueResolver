@@ -18,7 +18,10 @@ You are an AI coding assistant implementing changes in a real repository.
 Your job: produce updated file contents for each file that must change, matching the plan and the existing project.
 
 Rules:
-- Modify ONLY files listed in files_to_modify for this request (additional paths you include in changes may be auto-approved once).
+- Modify ONLY files listed in files_to_modify for this request.
+- files_to_modify includes planner paths first, then top vector-search hits — edit vector-suggested files only when needed for the fix; prefer minimal changes outside the planner list.
+- When the plan changes list names a single file, change ONLY that file unless another listed file clearly requires a coordinated edit.
+- Do NOT invent file content. If a target file is shown in context, base your edit on that exact content.
 - Honor plan scope and constraints (e.g. scope=frontend / "No backend changes" means NEVER edit server/, backend/, controllers, routes, or repos).
 - UI pages in Next.js App Router live at frontend/app/**/page.tsx — do NOT create Express/backend routes for UI pages.
 - Reuse existing API client modules and endpoint paths (e.g. ordersAPI.ts). ADD new exported functions; do NOT rename or change signatures of existing exports used elsewhere.
@@ -87,8 +90,15 @@ class CodeWriterAgent:
     def _write_batch(self, state: WorkflowStateSchema, batch_paths: list[str]) -> dict[str, str]:
         plan = dict(state.plan or {})
         plan["files_to_modify"] = batch_paths
+        fetch_paths = list(plan.get("files_to_fetch") or [])
+        context_paths = [p for p in fetch_paths if p not in batch_paths]
         context = self._format_chunks(
-            build_context(batch_paths, [], state.repo_files or [])
+            build_context(
+                batch_paths,
+                [],
+                state.repo_files or [],
+                context_paths=context_paths,
+            )
         )
         user_content = (
             f"Plan (trusted system output):\n{json.dumps(plan, indent=2)}\n\n"

@@ -88,6 +88,7 @@ class Settings(BaseSettings):
     CONTEXT_SEARCH_TOP_K_PER_QUERY: int = 12
     CONTEXT_SEARCH_MAX_QUERIES: int = 4
     CONTEXT_TARGET_MAX_FILES: int = 8
+    CONTEXT_VECTOR_FETCH_TOP_FILES: int = 5
     CONTEXT_ALLOWLIST_MAX_FILES: int = 16
     ENTRYPOINT_SCORE_BOOST: float = 0.08
     ENTRYPOINT_MAX_INJECT: int = 4
@@ -100,6 +101,7 @@ class Settings(BaseSettings):
     MAX_AGENT_STEPS: int = 5
     MAX_CONTEXT_TOKENS: int = 8000
     CODE_WRITER_MAX_FILES_PER_CALL: int = 1
+    PLAN_HINTS_MAX_EXTRA_FILES: int = 2
     WORKFLOW_SKIP_TESTS: bool = False
 
     # Isolated sandbox runner (only service that should mount Docker socket)

@@ -8,6 +8,7 @@ from app.domain.graph.nodes import (
     route_after_execute,
 )
 from app.domain.state.workflow_state import WorkflowStateSchema
+from app.domain.workflow_exceptions import WorkflowCancelledError
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,8 @@ def run_workflow(task_id: int, issue_url: str, repo_url: str, max_retries: int |
 
     try:
         return graph.invoke(initial)
+    except WorkflowCancelledError:
+        raise
     except Exception as exc:
         logger.exception("Workflow graph failed for task %s", task_id)
         failed = dict(initial)

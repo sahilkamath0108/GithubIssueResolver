@@ -24,9 +24,11 @@ def retry_failed_task(task_id: int):
         task_repo.increment_retry(task_id)
         log_repo.info(task_id, f"Manual retry triggered (attempt {task.retry_count + 1})")
 
-        run_workflow_task.apply_async(
+        async_result = run_workflow_task.apply_async(
             args=[task_id, task.issue_url, task.repo_url, task.github_user_id],
             queue="main_queue",
         )
+        task_repo.set_celery_task_id(task_id, async_result.id)
+        db.commit()
     finally:
         db.close()

@@ -14,7 +14,7 @@ import {
   parseRepoFromUrl,
 } from '@/lib/task-utils'
 
-const FILTERS = ['all', 'queued', 'running', 'success', 'failed']
+const FILTERS = ['all', 'queued', 'running', 'success', 'failed', 'cancelled']
 
 export default function TaskList() {
   const [tasks, setTasks] = useState([])

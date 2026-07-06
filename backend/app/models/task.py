@@ -12,6 +12,7 @@ class TaskStatus(str, enum.Enum):
     running = "running"
     success = "success"
     failed = "failed"
+    cancelled = "cancelled"
 
 
 class Task(Base):
@@ -28,6 +29,7 @@ class Task(Base):
     max_retries = Column(Integer, default=3)
     result_pr_url = Column(Text, nullable=True)
     error = Column(Text, nullable=True)
+    celery_task_id = Column(VARCHAR(255), nullable=True)
     created_at = Column(TIMESTAMP, nullable=False, server_default=func.now())
     updated_at = Column(TIMESTAMP, nullable=False, server_default=func.now(), onupdate=func.now())
 
