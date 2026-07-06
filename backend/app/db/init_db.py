@@ -72,6 +72,24 @@ def ensure_schema_compat(conn):
         BEGIN
             IF NOT EXISTS (
                 SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'github_users' AND column_name = 'groq_api_key_encrypted'
+            ) THEN
+                ALTER TABLE github_users ADD COLUMN groq_api_key_encrypted TEXT NULL;
+            END IF;
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'github_users' AND column_name = 'jina_api_key_encrypted'
+            ) THEN
+                ALTER TABLE github_users ADD COLUMN jina_api_key_encrypted TEXT NULL;
+            END IF;
+        END
+        $$;
+    """))
+    conn.execute(text("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
                 WHERE table_name = 'repo_index_state' AND column_name = 'embedding_model'
             ) THEN
                 ALTER TABLE repo_index_state ADD COLUMN embedding_model VARCHAR(128) NULL;

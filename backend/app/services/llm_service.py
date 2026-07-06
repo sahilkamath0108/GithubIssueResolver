@@ -6,19 +6,11 @@ import sys
 import contextvars
 from groq import Groq
 from app.core.settings import settings
+from app.core.user_provider_keys import resolve_groq_api_key
 
 # Redis cache client for LLM response caching
 _cache = redis_lib.Redis.from_url(settings.REDIS_URL, decode_responses=True)
 _CACHE_TTL = 60 * 60 * 24  # 24 hours
-
-# Groq client for chat LLM
-# NOTE: Groq's Python SDK expects the base host URL (e.g. https://api.groq.com)
-# and it will append its own API path. If you set a base_url that already includes
-# `/openai/v1`, you will get doubled paths like `/openai/v1/openai/v1/...`.
-_groq = Groq(
-    api_key=(settings.GROQ_API_KEY or None),
-    base_url=settings.GROQ_BASE_URL,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +77,13 @@ def call_llm(prompt: str, use_cache: bool = True) -> str:
     return call_llm_messages([{"role": "user", "content": prompt}], use_cache=use_cache)
 
 
+def _groq_client() -> Groq:
+    api_key = resolve_groq_api_key()
+    if not api_key:
+        raise RuntimeError("GROQ_API_KEY is not set. Add it in Settings or server `.env`.")
+    return Groq(api_key=api_key, base_url=settings.GROQ_BASE_URL)
+
+
 def call_llm_messages(
     messages: list[dict],
     use_cache: bool = True,
@@ -104,8 +103,8 @@ def call_llm_messages(
             _last_llm_finish_reason.set(cached.get("finish_reason"))
             return text
 
-    if not settings.GROQ_API_KEY:
-        raise RuntimeError("GROQ_API_KEY is not set. Add it to `.env`.")
+    if not resolve_groq_api_key():
+        raise RuntimeError("GROQ_API_KEY is not set. Add it in Settings or server `.env`.")
 
     resolved_max_tokens = (
         min(max_tokens, settings.effective_groq_max_output_tokens)
@@ -113,7 +112,7 @@ def call_llm_messages(
         else settings.effective_groq_max_output_tokens
     )
 
-    completion = _groq.chat.completions.create(
+    completion = _groq_client().chat.completions.create(
         model=settings.GROQ_MODEL,
         messages=messages,
         temperature=0.2,

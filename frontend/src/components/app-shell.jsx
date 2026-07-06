@@ -16,6 +16,7 @@ import { cn } from '@/lib/utils'
 import { checkHealth, fetchAuthStatus, listTasks, logout, startGitHubLogin } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
 import { ThemeToggle } from '@/components/theme-toggle'
+import { ProviderKeysModal } from '@/components/provider-keys-modal'
 import { Button, buttonVariants } from '@/components/ui/button'
 
 const nav = [
@@ -256,6 +257,7 @@ export function AppShell({ children }) {
 
         <main className="flex-1">{children}</main>
       </div>
+      <ProviderKeysModal />
     </div>
   )
 }

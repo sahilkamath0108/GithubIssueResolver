@@ -19,3 +19,17 @@ class GitHubRepoSummary(BaseModel):
     html_url: str
     default_branch: str
     permissions_push: bool
+
+
+class ProviderKeysStatus(BaseModel):
+    user_keys_required: bool
+    embedding_provider: str
+    groq_configured: bool
+    jina_configured: bool
+    groq_user_configured: bool
+    jina_user_configured: bool
+
+
+class ProviderKeysUpdate(BaseModel):
+    groq_api_key: str | None = None
+    jina_api_key: str | None = None

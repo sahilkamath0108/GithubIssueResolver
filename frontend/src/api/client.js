@@ -60,6 +60,16 @@ export async function listMyRepos(page = 1) {
   return data
 }
 
+export async function getProviderKeysStatus() {
+  const { data } = await api.get('/api/v1/auth/provider-keys')
+  return data
+}
+
+export async function updateProviderKeys(payload) {
+  const { data } = await api.put('/api/v1/auth/provider-keys', payload)
+  return data
+}
+
 export async function checkHealth() {
   const { data } = await api.get('/health')
   return data

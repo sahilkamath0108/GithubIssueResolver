@@ -7,6 +7,7 @@ import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from app.core.settings import Settings, settings as default_settings
+from app.core.user_provider_keys import resolve_jina_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -25,14 +26,15 @@ class JinaEmbeddingClient:
 
     def __init__(self, settings: Settings | None = None):
         self._settings = settings or default_settings
-        if not self._settings.JINA_API_KEY:
+        api_key = resolve_jina_api_key() or (self._settings.JINA_API_KEY or "").strip()
+        if not api_key:
             raise ValueError("JINA_API_KEY must be set for Jina embeddings.")
         base = self._settings.JINA_API_BASE_URL.rstrip("/")
         self._client = httpx.Client(
             base_url=base,
             timeout=httpx.Timeout(120.0, connect=10.0),
             headers={
-                "Authorization": f"Bearer {self._settings.JINA_API_KEY}",
+                "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
         )

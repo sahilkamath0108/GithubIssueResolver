@@ -10,8 +10,15 @@ from app.api.deps import get_current_user, get_db, resolve_auth_context
 from app.core.csrf import CSRF_COOKIE_NAME, new_csrf_token
 from app.core.settings import settings
 from app.repositories.github_user_repo import GitHubUserRepository
-from app.schemas.auth import AuthStatusResponse, GitHubRepoSummary, UserProfile
+from app.schemas.auth import (
+    AuthStatusResponse,
+    GitHubRepoSummary,
+    ProviderKeysStatus,
+    ProviderKeysUpdate,
+    UserProfile,
+)
 from app.services import auth_service
+from app.services.provider_key_service import provider_keys_status
 
 router = APIRouter()
 _oauth_state = redis_lib.Redis.from_url(settings.REDIS_URL, decode_responses=True)
@@ -57,6 +64,32 @@ def list_my_repos(
         raise HTTPException(status_code=401, detail="GitHub token not found. Sign in again.")
     repos = auth_service.list_user_repos(token, page=page)
     return [GitHubRepoSummary(**r) for r in repos]
+
+
+@router.get("/provider-keys", response_model=ProviderKeysStatus)
+def get_provider_keys(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    return ProviderKeysStatus(**provider_keys_status(db, user.id))
+
+
+@router.put("/provider-keys", response_model=ProviderKeysStatus)
+def update_provider_keys(
+    payload: ProviderKeysUpdate,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    repo = GitHubUserRepository(db)
+    groq = payload.groq_api_key.strip() if isinstance(payload.groq_api_key, str) else None
+    jina = payload.jina_api_key.strip() if isinstance(payload.jina_api_key, str) else None
+    if payload.groq_api_key is not None and groq is not None and len(groq) < 8:
+        raise HTTPException(status_code=400, detail="Groq API key looks too short.")
+    if payload.jina_api_key is not None and jina is not None and len(jina) < 8:
+        raise HTTPException(status_code=400, detail="Jina API key looks too short.")
+    repo.set_provider_keys(
+        user.id,
+        groq_api_key=groq if payload.groq_api_key is not None else None,
+        jina_api_key=jina if payload.jina_api_key is not None else None,
+    )
+    return ProviderKeysStatus(**provider_keys_status(db, user.id))
 
 
 @router.get("/github/login")

@@ -9,6 +9,8 @@ from app.models.task import TaskStatus
 from app.domain.graph.workflow_graph import run_workflow
 from app.domain.workflow_exceptions import WorkflowCancelledError
 from app.services import github_service
+from app.core.user_provider_keys import user_provider_keys_context
+from app.services.provider_key_service import assert_resolved_provider_keys_available, load_user_provider_keys
 
 
 def _write_dlq(
@@ -43,15 +45,23 @@ def run_workflow_task(self, task_id: int, issue_url: str, repo_url: str, github_
     dlq_repo = DLQRepository(db)
 
     user_token = None
+    groq_key = None
+    jina_key = None
     if github_user_id:
-        user_token = GitHubUserRepository(db).get_access_token(github_user_id)
+        user_repo = GitHubUserRepository(db)
+        user_token = user_repo.get_access_token(github_user_id)
+        groq_key, jina_key = load_user_provider_keys(db, github_user_id)
 
     try:
         task_repo.update_status(task_id, TaskStatus.running, current_step="planning")
         log_repo.info(task_id, "Workflow started", {"issue_url": issue_url})
         db.commit()
 
-        with github_service.github_token_context(user_token):
+        with github_service.github_token_context(user_token), user_provider_keys_context(
+            groq_api_key=groq_key,
+            jina_api_key=jina_key,
+        ):
+            assert_resolved_provider_keys_available()
             final_state = run_workflow(
                 task_id,
                 issue_url,

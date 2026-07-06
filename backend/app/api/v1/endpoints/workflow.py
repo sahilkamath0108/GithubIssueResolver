@@ -10,6 +10,8 @@ from app.repositories.task_repo import TaskRepository
 from app.schemas.workflow import WorkflowSubmitRequest, WorkflowSubmitResponse, TaskStatusResponse
 from app.models.task import TaskStatus
 from app.services import auth_service, github_service
+from app.core.user_provider_keys import user_provider_keys_context
+from app.services.provider_key_service import assert_provider_keys_for_user, load_user_provider_keys
 from app.services.workflow_cancel_service import cancel_workflow_task
 from app.domain.workflow_exceptions import TaskNotCancellableError
 from app.tasks.workflow_tasks import run_workflow_task
@@ -47,6 +49,7 @@ def submit_workflow(
         except ValueError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         github_user_id = ctx.user.id
+        assert_provider_keys_for_user(db, github_user_id)
     elif settings.oauth_enabled and not settings.GITHUB_TOKEN:
         raise HTTPException(
             status_code=403,

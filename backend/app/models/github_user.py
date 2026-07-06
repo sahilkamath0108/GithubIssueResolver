@@ -14,6 +14,8 @@ class GitHubUser(Base):
     avatar_url = Column(Text, nullable=True)
     access_token_encrypted = Column(Text, nullable=False)
     token_scope = Column(Text, nullable=True)
+    groq_api_key_encrypted = Column(Text, nullable=True)
+    jina_api_key_encrypted = Column(Text, nullable=True)
     created_at = Column(TIMESTAMP, nullable=False, server_default=func.now())
     updated_at = Column(TIMESTAMP, nullable=False, server_default=func.now(), onupdate=func.now())
 
