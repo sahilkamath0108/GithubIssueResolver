@@ -9,8 +9,8 @@ Python FastAPI + Celery backend for the GitHub Issue Resolver multi-agent system
 From repo root:
 
 ```bash
-docker compose up --build
-curl http://localhost:8000/health
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+curl http://localhost:3000/health
 ```
 
 From `backend/` (CLI indexing):
