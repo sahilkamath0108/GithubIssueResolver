@@ -17,3 +17,7 @@ services:
 
   qdrant:
     profiles: ["local-qdrant"]
+
+  frontend:
+    ports:
+      - "80:80"

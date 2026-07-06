@@ -27,8 +27,11 @@ def validate_production_settings() -> list[str]:
     if settings.oauth_enabled:
         if not settings.JWT_SECRET or len(settings.JWT_SECRET) < 32:
             issues.append("JWT_SECRET must be at least 32 characters when OAuth is enabled in production")
-        if not settings.AUTH_COOKIE_SECURE:
-            issues.append("AUTH_COOKIE_SECURE should be true in production (HTTPS)")
+        origin = (settings.FRONTEND_ORIGIN or "").strip().lower()
+        if origin.startswith("https://") and not settings.AUTH_COOKIE_SECURE:
+            issues.append("AUTH_COOKIE_SECURE must be true when FRONTEND_ORIGIN uses HTTPS")
+        elif origin.startswith("http://") and settings.AUTH_COOKIE_SECURE:
+            issues.append("AUTH_COOKIE_SECURE should be false when FRONTEND_ORIGIN uses HTTP")
     elif not settings.API_KEY:
         issues.append("API_KEY must be set when ENVIRONMENT=production and OAuth is not configured")
     if not settings.GITHUB_WEBHOOK_SECRET:
