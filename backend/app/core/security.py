@@ -34,14 +34,14 @@ def validate_production_settings() -> list[str]:
             issues.append("AUTH_COOKIE_SECURE should be false when FRONTEND_ORIGIN uses HTTP")
     elif not settings.API_KEY:
         issues.append("API_KEY must be set when ENVIRONMENT=production and OAuth is not configured")
-    if not settings.GITHUB_WEBHOOK_SECRET:
-        issues.append("GITHUB_WEBHOOK_SECRET must be set when ENVIRONMENT=production")
+    if settings.REQUIRE_WEBHOOK_SECRET and not settings.GITHUB_WEBHOOK_SECRET:
+        issues.append("GITHUB_WEBHOOK_SECRET must be set when REQUIRE_WEBHOOK_SECRET=true")
     if settings.oauth_enabled and not settings.GITHUB_TOKEN:
         issues.append(
             "GITHUB_TOKEN is recommended for webhooks/background jobs when OAuth is enabled"
         )
-    if not settings.repo_allowlist:
-        issues.append("REPO_ALLOWLIST must be set when ENVIRONMENT=production")
+    # Empty REPO_ALLOWLIST = any repo the authenticated user's GitHub token can access.
+    # Set a comma-separated list only to cap which repos this server will touch.
     if settings.WORKFLOW_SKIP_TESTS:
         issues.append("WORKFLOW_SKIP_TESTS must be false when ENVIRONMENT=production")
     if not settings.SANDBOX_RUNNER_URL:
