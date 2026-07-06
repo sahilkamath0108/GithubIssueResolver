@@ -1,6 +1,5 @@
 # Optional override for local debugging — exposes internal service ports to the host.
-# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
-# docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+# Usage: docker compose -f docker-compose.yml -f docker-compose.local.yml -f docker-compose.dev.yml up --build
 
 services:
   postgres:

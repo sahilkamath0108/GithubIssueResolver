@@ -4,6 +4,17 @@ from app.db.task_log_partitions import ensure_task_log_partitions
 import app.models
 
 
+def ensure_enums(conn):
+    """Create PostgreSQL ENUM types if missing (idempotent for Supabase reruns)."""
+    conn.execute(text("""
+        DO $$ BEGIN
+            CREATE TYPE taskstatus AS ENUM ('queued', 'running', 'success', 'failed', 'cancelled');
+        EXCEPTION
+            WHEN duplicate_object THEN NULL;
+        END $$;
+    """))
+
+
 def ensure_schema_compat(conn):
     """
     Small forward-only schema fixes for local/dev environments.
@@ -100,6 +111,9 @@ def ensure_schema_compat(conn):
 
 
 def init():
+    with engine.connect() as conn:
+        ensure_enums(conn)
+        conn.commit()
     Base.metadata.create_all(bind=engine)
     with engine.connect() as conn:
         ensure_task_log_partitions(conn)

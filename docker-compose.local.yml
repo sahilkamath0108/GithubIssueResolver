@@ -1,0 +1,26 @@
+# Local infrastructure — wait for containerized Postgres/Redis/Qdrant before app services.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+
+services:
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      sandbox:
+        condition: service_started
+
+  worker:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      sandbox:
+        condition: service_started

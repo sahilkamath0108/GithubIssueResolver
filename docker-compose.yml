@@ -33,12 +33,6 @@ services:
       dockerfile: Dockerfile
     container_name: multiagent_backend
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
-      qdrant:
-        condition: service_started
       sandbox:
         condition: service_started
     env_file:
@@ -61,12 +55,6 @@ services:
       dockerfile: Dockerfile.worker
     container_name: multiagent_worker
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
-      qdrant:
-        condition: service_started
       sandbox:
         condition: service_started
     env_file:

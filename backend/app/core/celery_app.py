@@ -1,12 +1,24 @@
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from celery import Celery
 
 from app.core.settings import settings
 
 
+def _celery_redis_url(redis_url: str) -> str:
+    """Normalize Redis URL for Celery/kombu (TLS requires ssl_cert_reqs on rediss://)."""
+    parsed = urlparse(redis_url)
+    params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if parsed.scheme == "rediss" and "ssl_cert_reqs" not in params:
+        params["ssl_cert_reqs"] = "CERT_NONE"
+    return urlunparse(parsed._replace(query=urlencode(params)))
+
+
 def _redis_backend_url(redis_url: str) -> str:
     """Use database 1 for Celery results when broker is database 0."""
+    # Upstash and some hosted Redis providers only expose database 0.
+    if "upstash.io" in redis_url:
+        return redis_url
     parsed = urlparse(redis_url)
     path = parsed.path or "/0"
     if path.endswith("/0"):
@@ -16,10 +28,12 @@ def _redis_backend_url(redis_url: str) -> str:
     return urlunparse(parsed._replace(path=path))
 
 
+_broker_url = _celery_redis_url(settings.REDIS_URL)
+
 celery_app = Celery(
     "multiagent",
-    broker=settings.REDIS_URL,
-    backend=_redis_backend_url(settings.REDIS_URL),
+    broker=_broker_url,
+    backend=_redis_backend_url(_broker_url),
     include=[
         "app.tasks.workflow_tasks",
         "app.tasks.retry_tasks",

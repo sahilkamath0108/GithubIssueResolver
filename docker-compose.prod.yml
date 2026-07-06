@@ -1,0 +1,19 @@
+# Production override: external Postgres (Supabase/Neon), Redis (Upstash), Qdrant Cloud.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Requires in .env:
+#   DATABASE_URL=postgresql://postgres.PROJECT_REF:...@....pooler.supabase.com:5432/postgres?sslmode=require
+#   REDIS_URL=rediss://default:...@....upstash.io:6379
+#   QDRANT_URL=https://....cloud.qdrant.io
+#   QDRANT_API_KEY=...
+
+services:
+  postgres:
+    profiles: ["local-db"]
+
+  redis:
+    profiles: ["local-redis"]
+
+  qdrant:
+    profiles: ["local-qdrant"]

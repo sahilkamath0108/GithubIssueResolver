@@ -23,7 +23,7 @@ class Task(Base):
     issue_url = Column(Text, nullable=False)
     repo_url = Column(Text, nullable=False)
     github_user_id = Column(BigInteger, ForeignKey("github_users.id"), nullable=True, index=True)
-    status = Column(SAEnum(TaskStatus), nullable=False, default=TaskStatus.queued)
+    status = Column(SAEnum(TaskStatus, name="taskstatus", create_type=False), nullable=False, default=TaskStatus.queued)
     current_step = Column(VARCHAR(255), nullable=False, default="")
     retry_count = Column(Integer, default=0)
     max_retries = Column(Integer, default=3)
