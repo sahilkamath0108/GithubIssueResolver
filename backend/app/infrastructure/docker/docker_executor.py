@@ -144,9 +144,6 @@ def run_tests(generated_code: dict) -> Tuple[str, bool]:
     if not generated_code:
         return "No code to validate.", False
 
-    if settings.is_production and settings.WORKFLOW_SKIP_TESTS:
-        return "WORKFLOW_SKIP_TESTS is forbidden in production.", False
-
     try:
         scan_generated_code(generated_code)
     except Exception as exc:

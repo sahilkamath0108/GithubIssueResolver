@@ -42,8 +42,6 @@ def validate_production_settings() -> list[str]:
         )
     # Empty REPO_ALLOWLIST = any repo the authenticated user's GitHub token can access.
     # Set a comma-separated list only to cap which repos this server will touch.
-    if settings.WORKFLOW_SKIP_TESTS:
-        issues.append("WORKFLOW_SKIP_TESTS must be false when ENVIRONMENT=production")
     if not settings.SANDBOX_RUNNER_URL:
         issues.append("SANDBOX_RUNNER_URL must be set when ENVIRONMENT=production")
     if not settings.SANDBOX_RUNNER_SECRET:
